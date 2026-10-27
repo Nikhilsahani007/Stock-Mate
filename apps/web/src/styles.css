@@ -150,3 +150,58 @@ input, select {
   .user-name { display: none; }
   .content { padding: 1rem; }
 }
+
+/* Phase 2: forms with line items, tables, invoices */
+textarea {
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
+.row > input, .row > select { flex: 1 1 140px; width: auto; }
+.row > .field { flex: 1 1 160px; }
+.row > .field.grow, .field.grow { flex: 3 1 220px; }
+.field.inline { flex-direction: row; align-items: center; gap: 0.5rem; }
+.field.inline select { width: auto; }
+input.qty { flex: 0 0 5rem; }
+input.money { flex: 0 1 8rem; }
+.small { font-size: 0.85rem; }
+.num { text-align: right; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+.table tr.low td { background: var(--warn); }
+.table tr.cancelled td { opacity: 0.55; text-decoration: line-through; }
+.tag.warn { background: var(--warn); border-color: transparent; }
+.tag.conf-estimated { background: var(--info); border-color: transparent; }
+.tag.conf-unknown { background: var(--danger); color: var(--danger-text); border-color: transparent; }
+.serials { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
+.serials code { font-size: 0.9rem; }
+.tenders { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 0.5rem; }
+.total { font-size: 1.25rem; margin: 0; }
+.tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.plain { margin: 0; padding-left: 1.2rem; }
+.card.action { text-decoration: none; font-weight: 600; min-height: 72px; justify-content: center; }
+.doc-head { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.doc-head .right { text-align: right; }
+.totals { display: grid; grid-template-columns: 1fr auto; gap: 0.25rem 1.5rem; margin: 0 0 0 auto; min-width: 240px; }
+.totals dt { color: var(--muted); }
+.totals dd { margin: 0; text-align: right; }
+.totals .contents { display: contents; }
+
+@media (max-width: 720px) {
+  .sidenav { overflow-x: auto; justify-content: flex-start; }
+  .sidenav a { white-space: nowrap; }
+}
+
+/* Print only the document itself, in black on white */
+@media print {
+  :root { --bg: #fff; --surface: #fff; --text: #000; --muted: #444; --border: #bbb; }
+  .topbar, .sidenav, .banner:not(.danger), .no-print { display: none !important; }
+  .shell { display: block; }
+  .content { max-width: none; padding: 0; }
+  .card.document { border: none; padding: 0; }
+}

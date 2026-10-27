@@ -23,8 +23,17 @@ export function AppShell() {
     );
   }
 
+  const can = (p: Parameters<typeof roleHas>[1]) => roleHas(role, p);
   const links = [
-    { to: "", label: "Home", show: true },
+    { to: "", label: "Home", show: true, primary: true },
+    { to: "sell", label: "Sell", show: can("sale.create"), primary: true },
+    { to: "purchases/new", label: "Buy", show: can("purchase.create"), primary: true },
+    { to: "stock", label: "Stock", show: can("stock.view"), primary: true },
+    { to: "documents", label: "Bills", show: true, primary: true },
+    { to: "stock/entry", label: "Stock entry", show: can("stock.adjust") || can("stock.transfer") },
+    { to: "products", label: "Products", show: can("stock.view") },
+    { to: "parties", label: "Customers", show: can("party.manage") },
+    { to: "expenses", label: "Expenses", show: can("expense.record") },
     { to: "branches", label: "Branches", show: true },
     { to: "team", label: "Team", show: roleHas(role, "member.read") },
     { to: "activity", label: "Activity", show: roleHas(role, "audit.read") },
@@ -57,7 +66,7 @@ export function AppShell() {
       </header>
       <nav className="sidenav" aria-label="Main">
         {links.map((l) => (
-          <NavLink key={l.to} to={l.to} end={l.to === ""}>
+          <NavLink key={l.to} to={l.to} end={l.to === "" || l.to === "stock"} className={l.primary ? "primary" : "secondary-link"}>
             {l.label}
           </NavLink>
         ))}
