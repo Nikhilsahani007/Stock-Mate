@@ -50,6 +50,7 @@ model User {
   memberships Membership[]
   auditLogs   AuditLog[]   @relation("AuditActor")
   invitesSent Invitation[] @relation("InvitedBy")
+  documents   Document[]   @relation("DocumentCreatedBy")
 }
 
 model Session {
@@ -81,6 +82,13 @@ model Business {
   memberships  Membership[]
   invitations  Invitation[]
   auditLogs    AuditLog[]
+  brands       Brand[]
+  categories   Category[]
+  products     Product[]
+  variants     Variant[]
+  parties      Party[]
+  serialUnits  SerialUnit[]
+  documents    Document[]
 }
 
 /// One per business. Payment processing comes after the MVP; this holds the
@@ -112,7 +120,14 @@ model Branch {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  memberAccess MembershipBranch[]
+  memberAccess     MembershipBranch[]
+  balances         StockBalance[]
+  movements        StockMovement[]
+  serialUnits      SerialUnit[]
+  documents        Document[]       @relation("DocumentBranch")
+  transfersIn      Document[]       @relation("TransferTarget")
+  ledgerEntries    LedgerEntry[]
+  documentCounters DocumentCounter[]
 
   @@unique([businessId, name])
   @@unique([id, businessId])
@@ -181,4 +196,409 @@ model AuditLog {
   createdAt   DateTime  @default(now())
 
   @@index([businessId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: catalog, stock and billing.
+//
+// Documents are what users write; stock movements and ledger entries are what
+// posting derives from them. Both ledgers are append-only, and a posted
+// document is never edited: cancelling it appends an exact reversal.
+// Amounts are integer paise.
+// ---------------------------------------------------------------------------
+
+enum SerialStatus {
+  IN_STOCK
+  SOLD
+  IN_TRANSIT
+  RETURNED_DAMAGED
+  RETURNED_TO_SUPPLIER
+  WRITTEN_OFF
+  /// The purchase or opening entry that brought it in was cancelled.
+  VOIDED
+}
+
+enum CostConfidence {
+  VERIFIED
+  ESTIMATED
+  UNKNOWN
+}
+
+enum PartyKind {
+  CUSTOMER
+  SUPPLIER
+  BOTH
+}
+
+enum DocumentType {
+  PURCHASE
+  SALE
+  OPENING_STOCK
+  ADJUSTMENT
+  TRANSFER
+  EXPENSE
+  RECEIPT
+  PAYMENT
+}
+
+enum DocumentStatus {
+  POSTED
+  /// A transfer that has left the sending branch but not been received.
+  IN_TRANSIT
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  CARD
+  BANK
+}
+
+enum ExpenseCategory {
+  RENT
+  SALARY
+  ELECTRICITY
+  TRANSPORT
+  OTHER
+}
+
+enum LedgerAccount {
+  CASH
+  BANK
+  UPI_CARD_CLEARING
+  INVENTORY
+  STOCK_IN_TRANSIT
+  RECEIVABLE
+  GST_INPUT
+  PAYABLE
+  GST_OUTPUT
+  SALES
+  COGS
+  PRICE_VARIANCE
+  STOCK_LOSS
+  EXPENSE
+  OPENING_EQUITY
+  ROUND_OFF
+}
+
+model Brand {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  createdAt  DateTime  @default(now())
+  products   Product[]
+
+  @@unique([businessId, name])
+  @@unique([id, businessId])
+}
+
+model Category {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  createdAt  DateTime  @default(now())
+  products   Product[]
+
+  @@unique([businessId, name])
+  @@unique([id, businessId])
+}
+
+model Product {
+  id           String    @id @default(cuid())
+  businessId   String
+  business     Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name         String
+  brandId      String?
+  brand        Brand?    @relation(fields: [brandId, businessId], references: [id, businessId])
+  categoryId   String?
+  category     Category? @relation(fields: [categoryId, businessId], references: [id, businessId])
+  /// Phones and other devices tracked one by one by IMEI or serial number.
+  isSerialized Boolean   @default(false)
+  hsnCode      String?
+  /// GST rate in basis points (18% = 1800).
+  gstRateBps   Int       @default(1800)
+  archivedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  variants     Variant[]
+
+  @@unique([businessId, name])
+  @@unique([id, businessId])
+}
+
+/// The stock unit: "Galaxy A15 · 6GB/128GB · Black".
+model Variant {
+  id           String          @id @default(cuid())
+  businessId   String
+  business     Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product         @relation(fields: [productId, businessId], references: [id, businessId], onDelete: Cascade)
+  name         String
+  sku          String?
+  barcode      String?
+  mrp          Int?
+  salePrice    Int?
+  reorderLevel Int             @default(0)
+  archivedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  balances     StockBalance[]
+  movements    StockMovement[]
+  serialUnits  SerialUnit[]
+  lines        DocumentLine[]
+
+  @@unique([productId, name])
+  @@unique([businessId, sku])
+  @@unique([businessId, barcode])
+  @@unique([id, businessId])
+}
+
+model Party {
+  id         String        @id @default(cuid())
+  businessId String
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  kind       PartyKind
+  name       String
+  phone      String?
+  gstin      String?
+  /// Two-digit GST state code, taken from the GSTIN or set directly.
+  stateCode  String?
+  address    String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  documents  Document[]
+  ledger     LedgerEntry[]
+
+  @@unique([id, businessId])
+  @@index([businessId, name])
+}
+
+/// One physical device. Keeps the same row, and its whole history, across
+/// sales, returns and buy-backs.
+model SerialUnit {
+  id             String         @id @default(cuid())
+  businessId     String
+  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  variantId      String
+  variant        Variant        @relation(fields: [variantId, businessId], references: [id, businessId])
+  branchId       String
+  branch         Branch         @relation(fields: [branchId, businessId], references: [id, businessId])
+  imei           String
+  imei2          String?
+  status         SerialStatus
+  /// Cost of the purchase or opening line that brought it in last (specific identification).
+  unitCost       Int
+  costConfidence CostConfidence
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  lines          LineSerial[]
+  movements      StockMovement[]
+
+  @@unique([businessId, imei])
+  @@unique([businessId, imei2])
+  @@unique([id, businessId])
+  @@index([businessId, branchId, status])
+}
+
+/// Running quantity and value per variant per branch. Locked during posting.
+/// Average cost is value / quantity.
+model StockBalance {
+  businessId     String
+  branchId       String
+  branch         Branch         @relation(fields: [branchId, businessId], references: [id, businessId])
+  variantId      String
+  variant        Variant        @relation(fields: [variantId, businessId], references: [id, businessId])
+  quantity       Int            @default(0)
+  value          Int            @default(0)
+  /// Weakest confidence of the cost layers received since quantity was last zero.
+  costConfidence CostConfidence @default(VERIFIED)
+  updatedAt      DateTime       @updatedAt
+
+  @@id([branchId, variantId])
+  @@index([businessId])
+}
+
+/// Append-only stock ledger.
+model StockMovement {
+  id             String         @id @default(cuid())
+  businessId     String
+  branchId       String
+  branch         Branch         @relation(fields: [branchId, businessId], references: [id, businessId])
+  variantId      String
+  variant        Variant        @relation(fields: [variantId, businessId], references: [id, businessId])
+  serialUnitId   String?
+  serialUnit     SerialUnit?    @relation(fields: [serialUnitId, businessId], references: [id, businessId])
+  documentId     String
+  document       Document       @relation(fields: [documentId, businessId], references: [id, businessId])
+  lineId         String?
+  quantity       Int
+  /// Signed change in stock value at cost.
+  value          Int
+  costConfidence CostConfidence
+  /// Written when the document was cancelled.
+  isReversal     Boolean        @default(false)
+  businessDate   DateTime       @db.Date
+  createdAt      DateTime       @default(now())
+
+  @@index([businessId, branchId, variantId, businessDate])
+  @@index([documentId])
+}
+
+model Document {
+  id               String           @id @default(cuid())
+  businessId       String
+  business         Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  branchId         String
+  branch           Branch           @relation("DocumentBranch", fields: [branchId, businessId], references: [id, businessId])
+  type             DocumentType
+  status           DocumentStatus
+  /// Gap-free per branch, type and fiscal year, e.g. SAL/2026-27/0001.
+  number           String
+  fiscalYear       String
+  businessDate     DateTime         @db.Date
+  partyId          String?
+  party            Party?           @relation(fields: [partyId, businessId], references: [id, businessId])
+  /// Receiving branch of a transfer.
+  toBranchId       String?
+  toBranch         Branch?          @relation("TransferTarget", fields: [toBranchId, businessId], references: [id, businessId])
+  /// Branch had GST invoicing on when this was posted.
+  gstApplied       Boolean          @default(false)
+  pricesIncludeTax Boolean          @default(false)
+  interState       Boolean          @default(false)
+  taxableTotal     Int              @default(0)
+  taxTotal         Int              @default(0)
+  /// Freight or handling on a purchase, spread over its lines by value.
+  otherCharges     Int              @default(0)
+  roundOff         Int              @default(0)
+  total            Int              @default(0)
+  /// Sum of payment allocations against this invoice or bill.
+  paidAmount       Int              @default(0)
+  expenseCategory  ExpenseCategory?
+  reason           String?
+  notes            String?
+  idempotencyKey   String?
+  createdById      String
+  createdBy        User             @relation("DocumentCreatedBy", fields: [createdById], references: [id])
+  postedAt         DateTime         @default(now())
+  receivedAt       DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  lines            DocumentLine[]
+  tenders          Tender[]
+  allocationsFrom  PaymentAllocation[] @relation("AllocationFrom")
+  allocationsTo    PaymentAllocation[] @relation("AllocationTo")
+  movements        StockMovement[]
+  ledgerEntries    LedgerEntry[]
+
+  @@unique([branchId, type, number])
+  @@unique([businessId, idempotencyKey])
+  @@unique([id, businessId])
+  @@index([businessId, type, businessDate])
+  @@index([businessId, partyId])
+}
+
+model DocumentLine {
+  id             String          @id @default(cuid())
+  businessId     String
+  documentId     String
+  document       Document        @relation(fields: [documentId, businessId], references: [id, businessId], onDelete: Cascade)
+  position       Int
+  variantId      String
+  variant        Variant         @relation(fields: [variantId, businessId], references: [id, businessId])
+  /// Signed for adjustments; positive everywhere else.
+  quantity       Int
+  unitPrice      Int
+  discount       Int             @default(0)
+  gstRateBps     Int             @default(0)
+  taxableValue   Int
+  cgst           Int             @default(0)
+  sgst           Int             @default(0)
+  igst           Int             @default(0)
+  lineTotal      Int
+  /// Stock value moved by this line at cost (COGS for a sale, landed cost for a purchase).
+  costTotal      Int
+  costConfidence CostConfidence?
+  serials        LineSerial[]
+
+  @@unique([id, businessId])
+  @@index([documentId])
+}
+
+model LineSerial {
+  lineId       String
+  serialUnitId String
+  businessId   String
+  line         DocumentLine @relation(fields: [lineId, businessId], references: [id, businessId], onDelete: Cascade)
+  serialUnit   SerialUnit   @relation(fields: [serialUnitId, businessId], references: [id, businessId])
+  unitCost     Int
+
+  @@id([lineId, serialUnitId])
+  @@index([serialUnitId])
+}
+
+/// Money taken or paid on a document, by method.
+model Tender {
+  id         String        @id @default(cuid())
+  businessId String
+  documentId String
+  document   Document      @relation(fields: [documentId, businessId], references: [id, businessId], onDelete: Cascade)
+  method     PaymentMethod
+  amount     Int
+  reference  String?
+
+  @@index([documentId])
+}
+
+/// Links a receipt, payment or counter tender to the invoice or bill it settles.
+model PaymentAllocation {
+  id             String   @id @default(cuid())
+  businessId     String
+  fromDocumentId String
+  from           Document @relation("AllocationFrom", fields: [fromDocumentId, businessId], references: [id, businessId], onDelete: Cascade)
+  toDocumentId   String
+  to             Document @relation("AllocationTo", fields: [toDocumentId, businessId], references: [id, businessId], onDelete: Cascade)
+  amount         Int
+
+  @@index([fromDocumentId])
+  @@index([toDocumentId])
+}
+
+/// Append-only double-entry ledger. Every document's entries balance.
+model LedgerEntry {
+  id              String           @id @default(cuid())
+  businessId      String
+  branchId        String
+  branch          Branch           @relation(fields: [branchId, businessId], references: [id, businessId])
+  documentId      String
+  document        Document         @relation(fields: [documentId, businessId], references: [id, businessId])
+  account         LedgerAccount
+  partyId         String?
+  party           Party?           @relation(fields: [partyId, businessId], references: [id, businessId])
+  expenseCategory ExpenseCategory?
+  debit           Int              @default(0)
+  credit          Int              @default(0)
+  /// Written when the document was cancelled.
+  isReversal      Boolean          @default(false)
+  businessDate    DateTime         @db.Date
+  createdAt       DateTime         @default(now())
+
+  @@index([businessId, account, businessDate])
+  @@index([businessId, partyId])
+  @@index([documentId])
+}
+
+/// Next document number per branch, type and fiscal year. Incremented inside
+/// the posting transaction, so a rolled-back post leaves no gap.
+model DocumentCounter {
+  businessId String
+  branchId   String
+  branch     Branch       @relation(fields: [branchId, businessId], references: [id, businessId], onDelete: Cascade)
+  type       DocumentType
+  fiscalYear String
+  last       Int          @default(0)
+
+  @@id([branchId, type, fiscalYear])
 }

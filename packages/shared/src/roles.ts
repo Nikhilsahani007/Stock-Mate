@@ -25,6 +25,13 @@ export const PERMISSIONS = [
   "payment.record",
   "expense.record",
   "report.view",
+  "catalog.manage",
+  "party.manage",
+  "stock.view",
+  /** See purchase costs, stock value and margins. */
+  "cost.view",
+  /** Cancel a posted document (writes a reversal). */
+  "document.cancel",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -48,10 +55,35 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     "payment.record",
     "expense.record",
     "report.view",
+    "catalog.manage",
+    "party.manage",
+    "stock.view",
+    "cost.view",
+    "document.cancel",
   ],
-  CASHIER: ["business.read", "branch.read", "sale.create", "payment.record"],
-  INVENTORY_STAFF: ["business.read", "branch.read", "purchase.create", "stock.adjust", "stock.transfer"],
-  ACCOUNTANT: ["business.read", "branch.read", "payment.record", "expense.record", "report.view", "audit.read"],
+  CASHIER: ["business.read", "branch.read", "sale.create", "payment.record", "party.manage", "stock.view"],
+  INVENTORY_STAFF: [
+    "business.read",
+    "branch.read",
+    "purchase.create",
+    "stock.adjust",
+    "stock.transfer",
+    "catalog.manage",
+    "party.manage",
+    "stock.view",
+    "cost.view",
+  ],
+  ACCOUNTANT: [
+    "business.read",
+    "branch.read",
+    "payment.record",
+    "expense.record",
+    "report.view",
+    "audit.read",
+    "party.manage",
+    "stock.view",
+    "cost.view",
+  ],
 };
 
 /** Roles that always see every branch of the business. */

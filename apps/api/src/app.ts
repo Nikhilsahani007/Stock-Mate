@@ -11,8 +11,12 @@ import { auditLogsRouter } from "./routes/audit-logs.js";
 import { authRouter } from "./routes/auth.js";
 import { branchesRouter } from "./routes/branches.js";
 import { businessRouter } from "./routes/business.js";
+import { catalogRouter } from "./routes/catalog.js";
+import { documentsRouter } from "./routes/documents.js";
 import { acceptInvitationRouter, invitationsRouter } from "./routes/invitations.js";
 import { membersRouter } from "./routes/members.js";
+import { partiesRouter } from "./routes/parties.js";
+import { stockRouter } from "./routes/stock.js";
 
 export function createApp() {
   const app = express();
@@ -39,6 +43,10 @@ export function createApp() {
   tenant.use("/members", membersRouter);
   tenant.use("/invitations", invitationsRouter);
   tenant.use("/audit-logs", auditLogsRouter);
+  tenant.use("/catalog", catalogRouter);
+  tenant.use("/parties", partiesRouter);
+  tenant.use("/stock", stockRouter);
+  tenant.use("/", documentsRouter);
   api.use("/businesses/:businessId", tenant);
 
   api.use(() => {
