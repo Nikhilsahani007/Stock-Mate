@@ -21,7 +21,7 @@ export async function recordTenders(ctx: PostContext, documentId: string, tender
 export async function postExpense(ctx: PostContext, input: z.output<typeof expenseSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
   const party = input.partyId ? await loadParty(ctx, input.partyId, "SUPPLIER") : null;
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const { number, fiscalYear } = await nextNumber(ctx, branch.id, "EXPENSE", iso);
   const doc = await ctx.tx.document.create({
     data: {
@@ -62,7 +62,7 @@ export async function postExpense(ctx: PostContext, input: z.output<typeof expen
 export async function postSettlement(ctx: PostContext, type: "RECEIPT" | "PAYMENT", input: z.output<typeof settlementSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
   const party = await loadParty(ctx, input.partyId, type === "RECEIPT" ? "CUSTOMER" : "SUPPLIER");
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const total = input.tenders.reduce((a, t) => a + t.amount, 0);
   const targetTypes: DocumentType[] = type === "RECEIPT" ? ["SALE"] : ["PURCHASE", "EXPENSE"];
 

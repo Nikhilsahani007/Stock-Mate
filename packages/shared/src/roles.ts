@@ -30,8 +30,10 @@ export const PERMISSIONS = [
   "stock.view",
   /** See purchase costs, stock value and margins. */
   "cost.view",
-  /** Cancel a posted document (writes a reversal). */
+  /** Cancel a posted document (writes a reversal). Also reopens a closed day. */
   "document.cancel",
+  /** Count the cash drawer and close a branch's business day. */
+  "day.close",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -60,8 +62,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     "stock.view",
     "cost.view",
     "document.cancel",
+    "day.close",
   ],
-  CASHIER: ["business.read", "branch.read", "sale.create", "payment.record", "party.manage", "stock.view"],
+  CASHIER: ["business.read", "branch.read", "sale.create", "payment.record", "party.manage", "stock.view", "day.close"],
   INVENTORY_STAFF: [
     "business.read",
     "branch.read",

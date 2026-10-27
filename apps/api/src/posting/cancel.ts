@@ -3,7 +3,7 @@ import { roleHas } from "@stockpilot/shared";
 import { audit } from "../audit.js";
 import { HttpError, badRequest, forbidden, notFound } from "../errors.js";
 import { canAccessBranch, tenantOf } from "../middleware/tenant.js";
-import { CREATE_PERMISSION, Journal, StockBook, type PostContext } from "./core.js";
+import { CREATE_PERMISSION, Journal, StockBook, assertDayOpen, lastClosedDay, lockDays, type PostContext } from "./core.js";
 
 /** For each type, the status a device must be in to be reversed, and the status it returns to. */
 const SERIAL_REVERSAL: Partial<Record<string, { from: SerialStatus; to: SerialStatus }>> = {
@@ -21,6 +21,19 @@ const SERIAL_REVERSAL: Partial<Record<string, { from: SerialStatus; to: SerialSt
  * variance, so balances stay consistent and can never go negative.
  */
 export async function cancelDocument(ctx: PostContext, documentId: string, reason: string): Promise<string> {
+  // Day locks come before document locks, as in every posting.
+  const target = await ctx.tx.document.findFirst({ where: { id: documentId, businessId: ctx.businessId }, select: { type: true, branchId: true, businessDate: true } });
+  if (!target || !canAccessBranch(ctx.req, target.branchId)) throw notFound("Document");
+  if (target.type === "DAY_CLOSE") {
+    // Reopening a day: only the branch's latest close, so later closes never rest on changed cash.
+    await lockDays(ctx, target.branchId);
+    const last = await lastClosedDay(ctx.tx, target.branchId);
+    if (!last || last.getTime() !== target.businessDate.getTime()) {
+      throw new HttpError(409, "CONFLICT", "Only the latest closed day of a branch can be reopened. Reopen the later days first.");
+    }
+  } else {
+    await assertDayOpen(ctx, target.branchId, target.businessDate);
+  }
   const rows = await ctx.tx.$queryRaw<{ id: string }[]>`
     SELECT "id" FROM "Document" WHERE "id" = ${documentId} AND "businessId" = ${ctx.businessId} FOR UPDATE`;
   if (rows.length === 0) throw notFound("Document");
@@ -93,6 +106,9 @@ export async function cancelDocument(ctx: PostContext, documentId: string, reaso
     where: { id: doc.id },
     data: { status: "CANCELLED", cancelledAt: new Date(), cancelReason: reason, paidAmount: 0 },
   });
+  if (doc.type === "DAY_CLOSE") {
+    await ctx.tx.dayClose.updateMany({ where: { documentId: doc.id }, data: { reopenedAt: new Date(), reopenReason: reason } });
+  }
   await audit(ctx.tx, ctx.req, { action: "document.cancelled", entityType: "Document", entityId: doc.id, metadata: { number: doc.number, type: doc.type, reason } });
   return doc.id;
 }

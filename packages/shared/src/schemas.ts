@@ -293,3 +293,37 @@ export const settlementSchema = z.object({
 export type SettlementInput = z.input<typeof settlementSchema>;
 
 export const cancelSchema = z.object({ reason: z.string().trim().min(3).max(300) });
+
+// ---------------------------------------------------------------------------
+// Phase 3: day close and reports.
+// ---------------------------------------------------------------------------
+
+export const CASH_HANDOVER = ["BANK", "OWNER"] as const;
+
+/** End-of-day cash count for one branch. */
+export const dayCloseSchema = z
+  .object({
+    branchId: id,
+    businessDate: businessDateSchema.optional(),
+    /** Cash counted in the drawer. */
+    countedCash: paise,
+    /** Only on a branch's first close: cash that was already in the drawer before StockPilot. */
+    openingFloat: paise.default(0),
+    /** Cash taken out of the drawer after counting: deposited in the bank or taken by the owner. */
+    handedOver: paise.default(0),
+    handedOverTo: z.enum(CASH_HANDOVER).optional(),
+    notes: optionalText(500),
+  })
+  .refine((d) => d.handedOver === 0 || d.handedOverTo, { message: "Say where the cash taken out went", path: ["handedOverTo"] })
+  .refine((d) => d.handedOver <= d.countedCash, { message: "Can't take out more cash than was counted", path: ["handedOver"] });
+export type DayCloseInput = z.input<typeof dayCloseSchema>;
+
+/** Date range for a report: both ends inclusive, at most a little over a year. */
+export const reportRangeSchema = z
+  .object({
+    from: businessDateSchema,
+    to: businessDateSchema,
+    branchId: id.optional(),
+  })
+  .refine((r) => r.from <= r.to, { message: "Start date is after end date", path: ["from"] })
+  .refine((r) => Date.parse(r.to) - Date.parse(r.from) <= 400 * 86_400_000, { message: "Choose a range of at most about a year", path: ["to"] });

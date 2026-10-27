@@ -192,6 +192,16 @@ input.money { flex: 0 1 8rem; }
 .totals dd { margin: 0; text-align: right; }
 .totals .contents { display: contents; }
 
+/* Reports */
+.stat { gap: 0.15rem; }
+.stat-estimated { border-left: 4px dashed var(--accent); }
+.stat-unknown { border-left: 4px solid var(--danger-text); }
+.report-section { display: flex; flex-direction: column; gap: 0.5rem; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.section-head h2 { margin: 0; }
+button.small { min-height: auto; padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+.report-block { gap: 1rem; }
+
 @media (max-width: 720px) {
   .sidenav { overflow-x: auto; justify-content: flex-start; }
   .sidenav a { white-space: nowrap; }

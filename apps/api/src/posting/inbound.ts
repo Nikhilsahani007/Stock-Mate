@@ -69,7 +69,7 @@ async function receiveSerials(
 export async function postPurchase(ctx: PostContext, input: z.output<typeof purchaseSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
   const party = await loadParty(ctx, input.partyId, "SUPPLIER");
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const variants = await loadVariants(ctx, input.lines.map((l) => l.variantId));
   assertDistinct(input.lines.flatMap((l) => l.serials.flatMap((s) => (s.imei2 ? [s.imei, s.imei2] : [s.imei]))));
 
@@ -163,7 +163,7 @@ export async function postPurchase(ctx: PostContext, input: z.output<typeof purc
 
 export async function postOpeningStock(ctx: PostContext, input: z.output<typeof openingStockSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const variants = await loadVariants(ctx, input.lines.map((l) => l.variantId));
   assertDistinct(input.lines.flatMap((l) => l.serials.flatMap((s) => (s.imei2 ? [s.imei, s.imei2] : [s.imei]))));
   input.lines.forEach((l, i) => checkSerialLine(variants.get(l.variantId)!, l.quantity, l.serials, i));

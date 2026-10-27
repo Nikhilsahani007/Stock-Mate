@@ -12,10 +12,12 @@ import { authRouter } from "./routes/auth.js";
 import { branchesRouter } from "./routes/branches.js";
 import { businessRouter } from "./routes/business.js";
 import { catalogRouter } from "./routes/catalog.js";
+import { dayCloseRouter } from "./routes/day-close.js";
 import { documentsRouter } from "./routes/documents.js";
 import { acceptInvitationRouter, invitationsRouter } from "./routes/invitations.js";
 import { membersRouter } from "./routes/members.js";
 import { partiesRouter } from "./routes/parties.js";
+import { reportsRouter } from "./routes/reports.js";
 import { stockRouter } from "./routes/stock.js";
 
 export function createApp() {
@@ -46,6 +48,8 @@ export function createApp() {
   tenant.use("/catalog", catalogRouter);
   tenant.use("/parties", partiesRouter);
   tenant.use("/stock", stockRouter);
+  tenant.use("/reports", reportsRouter);
+  tenant.use("/day-closes", dayCloseRouter);
   tenant.use("/", documentsRouter);
   api.use("/businesses/:businessId", tenant);
 

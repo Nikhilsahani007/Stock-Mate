@@ -29,6 +29,7 @@ export const CREATE_PERMISSION: Record<DocumentType, Permission> = {
   EXPENSE: "expense.record",
   RECEIPT: "payment.record",
   PAYMENT: "payment.record",
+  DAY_CLOSE: "day.close",
 };
 
 const NUMBER_PREFIX: Record<DocumentType, string> = {
@@ -40,6 +41,7 @@ const NUMBER_PREFIX: Record<DocumentType, string> = {
   EXPENSE: "EXP",
   RECEIPT: "RCT",
   PAYMENT: "PAY",
+  DAY_CLOSE: "CLS",
 };
 
 export const METHOD_ACCOUNT: Record<PaymentMethod, LedgerAccount> = {
@@ -101,14 +103,47 @@ export function idempotencyKeyOf(req: Request): string | null {
   return key;
 }
 
-/** Resolves the business date: today by default, never in the future. Returns a Date at UTC midnight. */
-export function resolveBusinessDate(ctx: PostContext, date: string | undefined): { date: Date; iso: string } {
+/**
+ * Resolves the business date for a posting at a branch: today by default, never
+ * in the future, and never on or before the branch's last closed day. Returns a
+ * Date at UTC midnight.
+ */
+export async function resolveBusinessDate(ctx: PostContext, branchId: string, date: string | undefined): Promise<{ date: Date; iso: string }> {
   const today = todayIn(ctx.timezone);
   const iso = date ?? today;
   const parsed = new Date(`${iso}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) throw badRequest("Invalid date");
   if (iso > today) throw badRequest("Date can't be in the future");
+  await assertDayOpen(ctx, branchId, parsed);
   return { date: parsed, iso };
+}
+
+export const dayClosed = (iso: string) =>
+  new HttpError(409, "DAY_CLOSED", `The day ${iso} is closed at this branch. Post it on a later date, or reopen the day first.`);
+
+/**
+ * Refuses postings dated on or before the branch's latest closed day. Takes the
+ * branch's day lock in shared mode, so postings run side by side while a day
+ * close (which takes it exclusively) waits for them and they wait for it.
+ */
+export async function assertDayOpen(ctx: PostContext, branchId: string, date: Date) {
+  await ctx.tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${`day-close:${branchId}`}, 0))`;
+  const last = await lastClosedDay(ctx.tx, branchId);
+  if (last && date.getTime() <= last.getTime()) throw dayClosed(date.toISOString().slice(0, 10));
+}
+
+/** Takes the branch's day lock exclusively, for closing or reopening a day. */
+export async function lockDays(ctx: PostContext, branchId: string) {
+  await ctx.tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`day-close:${branchId}`}, 0))`;
+}
+
+export async function lastClosedDay(tx: Tx, branchId: string): Promise<Date | null> {
+  const close = await tx.dayClose.findFirst({
+    where: { branchId, reopenedAt: null },
+    orderBy: { businessDate: "desc" },
+    select: { businessDate: true },
+  });
+  return close?.businessDate ?? null;
 }
 
 export function requireRole(req: Request, permission: Permission) {

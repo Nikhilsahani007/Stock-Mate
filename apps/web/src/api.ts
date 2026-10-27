@@ -127,7 +127,7 @@ export interface SerialUnit {
   costConfidence?: Confidence;
 }
 
-export type DocumentType = "PURCHASE" | "SALE" | "OPENING_STOCK" | "ADJUSTMENT" | "TRANSFER" | "EXPENSE" | "RECEIPT" | "PAYMENT";
+export type DocumentType = "PURCHASE" | "SALE" | "OPENING_STOCK" | "ADJUSTMENT" | "TRANSFER" | "EXPENSE" | "RECEIPT" | "PAYMENT" | "DAY_CLOSE";
 
 export interface DocumentSummary {
   id: string;

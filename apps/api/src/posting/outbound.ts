@@ -8,6 +8,7 @@ import {
   Journal,
   METHOD_ACCOUNT,
   StockBook,
+  assertDayOpen,
   assertDistinct,
   idempotencyKey,
   loadBranch,
@@ -76,7 +77,7 @@ async function moveOut(
 export async function postSale(ctx: PostContext, input: z.output<typeof saleSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
   const party = input.partyId ? await loadParty(ctx, input.partyId, "CUSTOMER") : null;
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const variants = await loadVariants(ctx, input.lines.map((l) => l.variantId));
   const allSerials = input.lines.flatMap((l) => l.serials);
   assertDistinct(allSerials);
@@ -169,7 +170,7 @@ export async function postSale(ctx: PostContext, input: z.output<typeof saleSche
 
 export async function postAdjustment(ctx: PostContext, input: z.output<typeof adjustmentSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const variants = await loadVariants(ctx, input.lines.map((l) => l.variantId));
   const allSerials = input.lines.flatMap((l) => l.serials);
   assertDistinct(allSerials);
@@ -241,7 +242,7 @@ export async function postTransfer(ctx: PostContext, input: z.output<typeof tran
   if (input.toBranchId === branch.id) throw badRequest("Choose a different branch to send to");
   const toBranch = await ctx.tx.branch.findFirst({ where: { id: input.toBranchId, businessId: ctx.businessId, archivedAt: null } });
   if (!toBranch) throw notFound("Branch");
-  const { date, iso } = resolveBusinessDate(ctx, input.businessDate);
+  const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
   const variants = await loadVariants(ctx, input.lines.map((l) => l.variantId));
   const allSerials = input.lines.flatMap((l) => l.serials);
   assertDistinct(allSerials);
@@ -286,6 +287,12 @@ export async function postTransfer(ctx: PostContext, input: z.output<typeof tran
 
 /** Receives a transfer at its destination; the receiving branch blends the cost into its own average. */
 export async function receiveTransfer(ctx: PostContext, documentId: string): Promise<string> {
+  // The receiving branch's day lock comes before the document lock, as in every other posting.
+  const target = await ctx.tx.document.findFirst({ where: { id: documentId, businessId: ctx.businessId, type: "TRANSFER" }, select: { toBranchId: true } });
+  if (!target?.toBranchId) throw notFound("Transfer");
+  const today = todayIn(ctx.timezone);
+  const date = new Date(`${today}T00:00:00Z`);
+  await assertDayOpen(ctx, target.toBranchId, date);
   const rows = await ctx.tx.$queryRaw<{ id: string }[]>`
     SELECT "id" FROM "Document" WHERE "id" = ${documentId} AND "businessId" = ${ctx.businessId} AND "type" = 'TRANSFER' FOR UPDATE`;
   if (rows.length === 0) throw notFound("Transfer");
@@ -294,8 +301,6 @@ export async function receiveTransfer(ctx: PostContext, documentId: string): Pro
   if (!canAccessBranch(ctx.req, doc.toBranchId!)) throw new HttpError(403, "FORBIDDEN", "Only the receiving branch can receive this transfer");
   if (doc.status !== "IN_TRANSIT") throw new HttpError(409, "CONFLICT", "This transfer is not in transit");
   const toBranchId = doc.toBranchId!;
-  const today = todayIn(ctx.timezone);
-  const date = new Date(`${today}T00:00:00Z`);
 
   const book = await StockBook.lock(ctx, toBranchId, doc.lines.map((l) => l.variantId));
   const serialIds = doc.lines.flatMap((l) => l.serials.map((s) => s.serialUnitId)).sort();
