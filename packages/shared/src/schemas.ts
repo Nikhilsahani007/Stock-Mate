@@ -140,7 +140,7 @@ export const updateProductSchema = z.object({
   archived: z.boolean().optional(),
 });
 
-export const PARTY_KINDS = ["CUSTOMER", "SUPPLIER", "BOTH"] as const;
+export const PARTY_KINDS = ["CUSTOMER", "SUPPLIER", "BOTH", "FINANCIER"] as const;
 export const partySchema = z.object({
   kind: z.enum(PARTY_KINDS),
   name: z.string().trim().min(1).max(120),
@@ -160,15 +160,26 @@ export const updatePartySchema = z.object({
   address: z.string().trim().max(300).nullable().optional(),
 });
 
-export const PAYMENT_METHODS = ["CASH", "UPI", "CARD", "BANK"] as const;
+export const PAYMENT_METHODS = ["CASH", "UPI", "CARD", "BANK", "FINANCE"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
-export const tenderSchema = z.object({
-  method: z.enum(PAYMENT_METHODS),
-  amount: paise.min(1),
-  reference: optionalText(80),
-});
+/** Money that actually changes hands. FINANCE (EMI) is only a way to pay for a sale. */
+export const MONEY_METHODS = ["CASH", "UPI", "CARD", "BANK"] as const;
 
-export const EXPENSE_CATEGORIES = ["RENT", "SALARY", "ELECTRICITY", "TRANSPORT", "OTHER"] as const;
+const tenderFields = {
+  amount: paise.min(1),
+  /** UPI reference, card slip or the financier's loan number. */
+  reference: optionalText(80),
+};
+
+/** Money moving now: cash, UPI, card or bank. */
+export const moneyTenderSchema = z.object({ method: z.enum(MONEY_METHODS), ...tenderFields });
+
+/** How a sale was paid. An EMI (FINANCE) tender names the financier who will pay the shop. */
+export const tenderSchema = z
+  .object({ method: z.enum(PAYMENT_METHODS), ...tenderFields, partyId: id.optional() })
+  .refine((t) => (t.method === "FINANCE") === !!t.partyId, { message: "Choose the finance company for an EMI payment", path: ["partyId"] });
+
+export const EXPENSE_CATEGORIES = ["RENT", "SALARY", "ELECTRICITY", "TRANSPORT", "OTHER", "FINANCE_CHARGES"] as const;
 
 const qty = z.number().int().min(1).max(100_000);
 const docBase = {
@@ -199,7 +210,7 @@ export const purchaseSchema = z.object({
     )
     .min(1)
     .max(200),
-  tenders: z.array(tenderSchema).max(5).default([]),
+  tenders: z.array(moneyTenderSchema).max(5).default([]),
 });
 export type PurchaseInput = z.input<typeof purchaseSchema>;
 
@@ -276,21 +287,87 @@ export const expenseSchema = z
     category: z.enum(EXPENSE_CATEGORIES),
     amount: paise.min(1),
     /** How it was paid. Leave out for an unpaid bill, which then needs a supplier. */
-    method: z.enum(PAYMENT_METHODS).optional(),
+    method: z.enum(MONEY_METHODS).optional(),
     partyId: id.optional(),
   })
   .refine((e) => e.method || e.partyId, { message: "An unpaid expense needs a supplier", path: ["partyId"] });
 export type ExpenseInput = z.input<typeof expenseSchema>;
 
 /** A customer receipt or a supplier payment. */
-export const settlementSchema = z.object({
+export const settlementSchema = z
+  .object({
+    ...docBase,
+    partyId: id,
+    tenders: z.array(moneyTenderSchema).max(5).default([]),
+    /** Only from a financier: fees or subvention kept back from an EMI payout. */
+    deduction: paise.default(0),
+    /** Which invoices or bills to settle. Left out: oldest first. */
+    allocations: z.array(z.object({ documentId: id, amount: paise.min(1) })).max(100).optional(),
+  })
+  .refine((s) => s.tenders.length > 0 || s.deduction > 0, { message: "Enter the amount received or paid", path: ["tenders"] });
+export type SettlementInput = z.input<typeof settlementSchema>;
+
+// ---------------------------------------------------------------------------
+// Phase 4: returns. A return always reverses lines of a posted document, so
+// prices, tax and cost come from the original, never from the client.
+// ---------------------------------------------------------------------------
+
+/** Credit note: goods a customer brought back. Prices and costs are the original invoice's. */
+export const saleReturnSchema = z.object({
+  saleId: id,
+  businessDate: businessDateSchema.optional(),
+  reason: z.string().trim().min(3).max(300),
+  notes: optionalText(500),
+  lines: z
+    .array(
+      z.object({
+        /** The invoice line being returned. */
+        lineId: id,
+        quantity: qty,
+        /** For phones: which of the IMEIs sold on that line came back. */
+        serials: z.array(deviceIdSchema).max(1000).default([]),
+        /** Came back broken: written off as a loss instead of going back on the shelf. */
+        damaged: z.boolean().default(false),
+      }),
+    )
+    .min(1)
+    .max(200),
+  /**
+   * Money handed back now. A FINANCE refund cancels that much of the EMI loan
+   * the finance company was to pay. Whatever isn't refunded is credited to the
+   * customer's account.
+   */
+  refunds: z.array(tenderSchema).max(5).default([]),
+});
+export type SaleReturnInput = z.input<typeof saleReturnSchema>;
+
+/** Debit note: goods sent back to a supplier, at the price they will credit. */
+export const purchaseReturnSchema = z.object({
   ...docBase,
   partyId: id,
-  tenders: z.array(tenderSchema).min(1).max(5),
-  /** Which invoices or bills to settle. Left out: oldest first. */
-  allocations: z.array(z.object({ documentId: id, amount: paise.min(1) })).max(100).optional(),
+  /** The supplier bill these goods came on, if known. Its open balance is reduced first. */
+  purchaseId: id.optional(),
+  /** The supplier's own credit note number. */
+  supplierRef: optionalText(60),
+  reason: z.string().trim().min(3).max(300),
+  lines: z
+    .array(
+      z.object({
+        variantId: id,
+        quantity: qty,
+        /** What the supplier credits per unit, before GST. */
+        unitPrice: paise,
+        gstRateBps: gstRateSchema.optional(),
+        /** IMEIs going back: in stock or returned damaged by a customer. */
+        serials: z.array(deviceIdSchema).max(1000).default([]),
+      }),
+    )
+    .min(1)
+    .max(200),
+  /** Money the supplier paid back now. The rest reduces what the shop owes them. */
+  refunds: z.array(moneyTenderSchema).max(5).default([]),
 });
-export type SettlementInput = z.input<typeof settlementSchema>;
+export type PurchaseReturnInput = z.input<typeof purchaseReturnSchema>;
 
 export const cancelSchema = z.object({ reason: z.string().trim().min(3).max(300) });
 

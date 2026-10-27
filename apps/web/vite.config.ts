@@ -5,6 +5,6 @@ export default defineConfig({
   plugins: [react()],
   server: {
     // Same-origin API in development, so session cookies just work.
-    proxy: { "/api": "http://localhost:4000" },
+    proxy: { "/api": process.env.API_URL ?? "http://localhost:4000" },
   },
 });

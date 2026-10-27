@@ -28,3 +28,41 @@ export function applyBasisPoints(paise: Paise, bps: number): Paise {
   const raw = (paise * bps) / 10_000;
   return Math.sign(raw) * Math.round(Math.abs(raw));
 }
+
+const ONES = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+const TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+
+function belowHundred(n: number): string {
+  if (n < 20) return ONES[n]!;
+  return `${TENS[Math.floor(n / 10)]}${n % 10 ? ` ${ONES[n % 10]}` : ""}`;
+}
+
+function belowThousand(n: number): string {
+  const h = Math.floor(n / 100);
+  const rest = n % 100;
+  return [h ? `${ONES[h]} Hundred` : "", rest ? belowHundred(rest) : ""].filter(Boolean).join(" ");
+}
+
+/** Whole rupees in words with Indian grouping: 1,25,000 -> "One Lakh Twenty Five Thousand". */
+function rupeeWords(n: number): string {
+  if (n === 0) return "Zero";
+  const parts: string[] = [];
+  const crore = Math.floor(n / 10_000_000);
+  if (crore) parts.push(`${rupeeWords(crore)} Crore`);
+  const lakh = Math.floor((n % 10_000_000) / 100_000);
+  if (lakh) parts.push(`${belowHundred(lakh)} Lakh`);
+  const thousand = Math.floor((n % 100_000) / 1000);
+  if (thousand) parts.push(`${belowHundred(thousand)} Thousand`);
+  const rest = n % 1000;
+  if (rest) parts.push(belowThousand(rest));
+  return parts.join(" ");
+}
+
+/** An amount in words for invoices: 1_59_990_50 paise -> "Rupees One Lakh Fifty Nine Thousand Nine Hundred Ninety and Fifty Paise Only". */
+export function amountInWords(paise: Paise): string {
+  const abs = Math.abs(paise);
+  const rupees = Math.floor(abs / 100);
+  const p = abs % 100;
+  const words = `Rupees ${rupeeWords(rupees)}${p ? ` and ${belowHundred(p)} Paise` : ""} Only`;
+  return paise < 0 ? `Minus ${words}` : words;
+}

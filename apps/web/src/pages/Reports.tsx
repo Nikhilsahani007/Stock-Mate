@@ -92,6 +92,8 @@ function SalesReport({ path, file }: ReportProps) {
   const { data, error } = useReport<{
     totals: { invoices: number; units: number; netSales: number; tax: number; billed: number; paidAtCounter: number; onCredit: number };
     cancelled: { count: number; total: number };
+    returns: { creditNotes: number; units: number; netSales: number; tax: number; billed: number; refunded: number };
+    netSalesAfterReturns: number;
     byDay: { date: string; invoices: number; billed: number; netSales: number }[];
     byBranch: { name: string; invoices: number; billed: number; netSales: number }[];
     byBrand: Named[];
@@ -108,6 +110,13 @@ function SalesReport({ path, file }: ReportProps) {
         <Stat label="Net sales (before GST)" value={rupees(t.netSales)} note={t.tax ? `GST ${rupees(t.tax)}` : undefined} />
         <Stat label="Paid at the counter" value={rupees(t.paidAtCounter)} />
         <Stat label="Left on credit" value={rupees(t.onCredit)} />
+        {data.returns.creditNotes > 0 && (
+          <Stat
+            label="Returns"
+            value={rupees(data.returns.billed)}
+            note={`${data.returns.creditNotes} credit note${data.returns.creditNotes === 1 ? "" : "s"} · net sales after returns ${rupees(data.netSalesAfterReturns)}`}
+          />
+        )}
       </div>
       {data.cancelled.count > 0 && (
         <p className="muted">
@@ -190,7 +199,7 @@ function ProfitReport({ path, file }: ReportProps) {
         rows={[
           ...data.expenses.byCategory.map((e) => ({ name: label(e.category), amount: e.total })),
           { name: "Stock written off", amount: otherCosts.stockLoss },
-          { name: "Cost differences on cancellations", amount: otherCosts.priceVariance },
+          { name: "Cost differences (cancellations, supplier credits)", amount: otherCosts.priceVariance },
           { name: "Cash shortage (excess if negative)", amount: otherCosts.cashShortage },
         ].filter((r) => r.amount !== 0)}
         empty="No expenses or losses in this period."
@@ -223,6 +232,8 @@ interface MethodRow {
   method: string;
   atCounter: number;
   receipts: number;
+  refunded: number;
+  supplierRefunds: number;
   collected: number;
   paidOut: number;
   net: number;
@@ -230,7 +241,7 @@ interface MethodRow {
 
 function CollectionsReport({ path, file }: ReportProps) {
   const { data, error } = useReport<{
-    totals: { atCounter: number; receipts: number; collected: number; paidOut: number };
+    totals: { atCounter: number; receipts: number; collected: number; paidOut: number; refunded: number; supplierRefunds: number; financed: number };
     byMethod: MethodRow[];
     byDay: { date: string; in: number; out: number }[];
   }>(path);
@@ -240,7 +251,10 @@ function CollectionsReport({ path, file }: ReportProps) {
       <div className="grid">
         <Stat label="Collected" value={rupees(data.totals.collected)} note={`${rupees(data.totals.atCounter)} at the counter, ${rupees(data.totals.receipts)} from dues`} />
         <Stat label="Paid out" value={rupees(data.totals.paidOut)} note="Suppliers and expenses" />
-        <Stat label="Net" value={rupees(data.totals.collected - data.totals.paidOut)} />
+        {data.totals.refunded > 0 && <Stat label="Refunded to customers" value={rupees(data.totals.refunded)} />}
+        {data.totals.supplierRefunds > 0 && <Stat label="Refunds from suppliers" value={rupees(data.totals.supplierRefunds)} />}
+        <Stat label="Net" value={rupees(data.totals.collected + data.totals.supplierRefunds - data.totals.paidOut - data.totals.refunded)} />
+        {data.totals.financed > 0 && <Stat label="Sold on EMI" value={rupees(data.totals.financed)} note="Owed by finance companies; counted when they pay" />}
       </div>
       <ReportTable
         title="By payment method"
@@ -251,6 +265,7 @@ function CollectionsReport({ path, file }: ReportProps) {
           h.money("At the counter", (r) => r.atCounter),
           h.money("Dues received", (r) => r.receipts),
           h.money("Paid out", (r) => r.paidOut),
+          h.money("Refunds", (r) => r.refunded - r.supplierRefunds),
           h.money("Net", (r) => r.net),
         ]}
       />
@@ -360,7 +375,7 @@ interface DueSide {
 }
 
 function DuesReport({ path, file }: ReportProps) {
-  const { data, error } = useReport<{ asOf: string; customers: DueSide; suppliers: DueSide }>(path);
+  const { data, error } = useReport<{ asOf: string; customers: DueSide; suppliers: DueSide; financiers: { totalDue: number; parties: PartyDue[] } }>(path);
   if (!data) return error;
   const partyCols = (owes: string) => (h: ColumnHelpers<PartyDue>) => [
     { label: "Name", cell: (r: PartyDue) => <Link to={`../parties/${r.partyId}`}>{r.name}</Link>, csv: (r: PartyDue) => r.name },
@@ -374,11 +389,23 @@ function DuesReport({ path, file }: ReportProps) {
       <div className="grid">
         <Stat label="Customers owe you" value={rupees(data.customers.totalDue)} note={data.customers.advances ? `${rupees(data.customers.advances)} advances held` : undefined} />
         <Stat label="You owe suppliers" value={rupees(data.suppliers.totalDue)} note={data.suppliers.advances ? `${rupees(data.suppliers.advances)} paid in advance` : undefined} />
+        {data.financiers.parties.length > 0 && <Stat label="EMI payouts due" value={rupees(data.financiers.totalDue)} note="From finance companies" />}
       </div>
       <ReportTable title="Customer dues by age" rows={data.customers.aging} columns={(h) => [{ label: "Unpaid for", cell: (r) => r.label }, h.money("Amount", (r) => r.amount)]} />
       <ReportTable title="Customers" file={`${file}-customers`} rows={data.customers.parties} empty="No customer owes anything." columns={partyCols("Owes you")} />
       <ReportTable title="Supplier dues by age" rows={data.suppliers.aging} columns={(h) => [{ label: "Unpaid for", cell: (r) => r.label }, h.money("Amount", (r) => r.amount)]} />
       <ReportTable title="Suppliers" file={`${file}-suppliers`} rows={data.suppliers.parties} empty="You owe no supplier anything." columns={partyCols("You owe")} />
+      {data.financiers.parties.length > 0 && (
+        <ReportTable
+          title="Finance companies"
+          file={`${file}-finance-companies`}
+          rows={data.financiers.parties}
+          columns={(h) => [
+            { label: "Name", cell: (r: PartyDue) => <Link to={`../parties/${r.partyId}`}>{r.name}</Link>, csv: (r: PartyDue) => r.name },
+            h.money("Owes you", (r) => r.balance),
+          ]}
+        />
+      )}
     </>
   );
 }
@@ -406,6 +433,7 @@ interface GstBranch {
   hsn: (TaxLine & { hsn: string; units: number })[];
   b2bInvoices: { documentId: string; number: string; date: string; party: string; gstin: string; interState: boolean; taxable: number; tax: number; total: number }[];
   documents: { first: string; last: string; issued: number; cancelled: number } | null;
+  creditNotes: { count: number; taxable: number; tax: number };
 }
 
 function taxCols<T extends TaxLine>(h: ColumnHelpers<T>): Column<T>[] {
@@ -468,6 +496,12 @@ function GstReport({ path, file }: ReportProps) {
               columns={(h) => [{ label: "HSN", cell: (r) => r.hsn || "Not set" }, { label: "Rate", cell: (r) => rate(r.rate) }, h.num("Qty", (r) => r.units), ...taxCols(h)]}
             />
             <ReportTable title="Purchases by rate (input credit)" file={`${f}-inward`} rows={b.inward} columns={(h) => [{ label: "Rate", cell: (r) => rate(r.rate) }, ...taxCols(h)]} />
+            {b.creditNotes.count > 0 && (
+              <p className="muted small">
+                {b.creditNotes.count} credit note{b.creditNotes.count === 1 ? "" : "s"} for returns ({rupees(b.creditNotes.taxable)} taxable, {rupees(b.creditNotes.tax)} tax) are
+                already taken off the sales figures above.
+              </p>
+            )}
             {b.documents && (
               <p className="muted small">
                 Invoices issued {b.documents.first} to {b.documents.last}: {b.documents.issued}, of which {b.documents.cancelled} cancelled.

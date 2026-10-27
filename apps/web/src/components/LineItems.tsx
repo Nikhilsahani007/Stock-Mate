@@ -37,20 +37,26 @@ export function SerialChooser({
   variantId,
   selected,
   onChange,
+  statuses = ["IN_STOCK"],
 }: {
   businessId: string;
   branchId: string;
   variantId: string;
   selected: string[];
   onChange: (serials: string[]) => void;
+  /** Which device states can be picked. Damaged returns are shown with a tag. */
+  statuses?: string[];
 }) {
   const [units, setUnits] = useState<SerialUnit[]>([]);
+  const statusKey = statuses.join(",");
   useEffect(() => {
     if (!branchId || !variantId) return;
-    void api<{ units: SerialUnit[] }>(`/businesses/${businessId}/stock/serials?branchId=${branchId}&variantId=${variantId}&status=IN_STOCK`).then((r) =>
-      setUnits(r.units),
-    );
-  }, [businessId, branchId, variantId]);
+    void Promise.all(
+      statusKey.split(",").map((status) =>
+        api<{ units: SerialUnit[] }>(`/businesses/${businessId}/stock/serials?branchId=${branchId}&variantId=${variantId}&status=${status}`),
+      ),
+    ).then((r) => setUnits(r.flatMap((x) => x.units)));
+  }, [businessId, branchId, variantId, statusKey]);
 
   if (units.length === 0 && selected.length === 0) return <p className="muted small">None of this model in stock here.</p>;
   const all = [...new Set([...selected, ...units.map((u) => u.imei)])];
@@ -64,6 +70,7 @@ export function SerialChooser({
             onChange={(e) => onChange(e.target.checked ? [...selected, imei] : selected.filter((s) => s !== imei))}
           />
           <code>{imei}</code>
+          {units.find((u) => u.imei === imei)?.status === "RETURNED_DAMAGED" && <span className="tag warn">Damaged</span>}
         </label>
       ))}
     </div>
@@ -111,7 +118,7 @@ export function LineEditor({
   options: VariantOption[];
   onChange: (line: LineDraft) => void;
   onRemove: () => void;
-  serialMode: { kind: "pick"; businessId: string; branchId: string } | { kind: "new" };
+  serialMode: { kind: "pick"; businessId: string; branchId: string; statuses?: string[] } | { kind: "new" };
   price?: boolean;
   /** Fill the price from the catalog's sale price when a product is chosen (sales only). */
   prefillSalePrice?: boolean;
@@ -146,7 +153,14 @@ export function LineEditor({
       {children && <div className="row">{children}</div>}
       {serialized &&
         (serialMode.kind === "pick" ? (
-          <SerialChooser businessId={serialMode.businessId} branchId={serialMode.branchId} variantId={line.variantId} selected={line.serials} onChange={(serials) => onChange({ ...line, serials })} />
+          <SerialChooser
+            businessId={serialMode.businessId}
+            branchId={serialMode.branchId}
+            variantId={line.variantId}
+            selected={line.serials}
+            statuses={serialMode.statuses}
+            onChange={(serials) => onChange({ ...line, serials })}
+          />
         ) : (
           <SerialTextarea value={line.serials} onChange={(serials) => onChange({ ...line, serials })} />
         ))}

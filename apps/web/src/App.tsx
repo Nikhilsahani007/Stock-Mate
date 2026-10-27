@@ -14,8 +14,11 @@ import { NewPurchase } from "./pages/NewPurchase";
 import { NewSale } from "./pages/NewSale";
 import { Parties, PartyView } from "./pages/Parties";
 import { Products } from "./pages/Products";
+import { PurchaseReturn } from "./pages/PurchaseReturn";
+import { Receipt } from "./pages/Receipt";
 import { Register } from "./pages/Register";
 import { Reports } from "./pages/Reports";
+import { SaleReturn } from "./pages/SaleReturn";
 import { Stock } from "./pages/Stock";
 import { StockEntry } from "./pages/StockEntry";
 import { Team } from "./pages/Team";
@@ -39,11 +42,14 @@ export function App() {
             <Route index element={<Dashboard />} />
             <Route path="sell" element={<NewSale />} />
             <Route path="purchases/new" element={<NewPurchase />} />
+            <Route path="purchases/return" element={<PurchaseReturn />} />
             <Route path="stock" element={<Stock />} />
             <Route path="stock/entry" element={<StockEntry />} />
             <Route path="products" element={<Products />} />
             <Route path="documents" element={<Documents />} />
             <Route path="documents/:documentId" element={<DocumentView />} />
+            <Route path="documents/:documentId/return" element={<SaleReturn />} />
+            <Route path="documents/:documentId/receipt" element={<Receipt />} />
             <Route path="parties" element={<Parties />} />
             <Route path="parties/:partyId" element={<PartyView />} />
             <Route path="expenses" element={<Expenses />} />

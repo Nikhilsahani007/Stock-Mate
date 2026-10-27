@@ -1,4 +1,4 @@
-import { Prisma, type CostConfidence, type DocumentType, type LedgerAccount, type PaymentMethod } from "@prisma/client";
+import { Prisma, type CostConfidence, type DocumentType, type LedgerAccount, type PartyKind, type PaymentMethod } from "@prisma/client";
 import { fiscalYearOf, roleHas, todayIn, type Permission } from "@stockpilot/shared";
 import type { Request } from "express";
 import { prisma } from "../db.js";
@@ -30,6 +30,8 @@ export const CREATE_PERMISSION: Record<DocumentType, Permission> = {
   RECEIPT: "payment.record",
   PAYMENT: "payment.record",
   DAY_CLOSE: "day.close",
+  SALE_RETURN: "sale.return",
+  PURCHASE_RETURN: "purchase.create",
 };
 
 const NUMBER_PREFIX: Record<DocumentType, string> = {
@@ -42,13 +44,17 @@ const NUMBER_PREFIX: Record<DocumentType, string> = {
   RECEIPT: "RCT",
   PAYMENT: "PAY",
   DAY_CLOSE: "CLS",
+  SALE_RETURN: "CRN",
+  PURCHASE_RETURN: "DBN",
 };
 
+/** Where money paid by each method sits. An EMI (FINANCE) tender is a receivable from the financier. */
 export const METHOD_ACCOUNT: Record<PaymentMethod, LedgerAccount> = {
   CASH: "CASH",
   UPI: "UPI_CARD_CLEARING",
   CARD: "UPI_CARD_CLEARING",
   BANK: "BANK",
+  FINANCE: "RECEIVABLE",
 };
 
 const CONFIDENCE_RANK: Record<CostConfidence, number> = { VERIFIED: 0, ESTIMATED: 1, UNKNOWN: 2 };
@@ -159,11 +165,20 @@ export async function loadBranch(ctx: PostContext, branchId: string) {
   return branch;
 }
 
-export async function loadParty(ctx: PostContext, partyId: string, role: "CUSTOMER" | "SUPPLIER") {
+type PartyRole = "CUSTOMER" | "SUPPLIER" | "FINANCIER";
+const ROLE_KINDS: Record<PartyRole, PartyKind[]> = {
+  CUSTOMER: ["CUSTOMER", "BOTH"],
+  SUPPLIER: ["SUPPLIER", "BOTH"],
+  FINANCIER: ["FINANCIER"],
+};
+const ROLE_LABEL: Record<PartyRole, string> = { CUSTOMER: "a customer", SUPPLIER: "a supplier", FINANCIER: "a finance company" };
+
+/** A party of this business acting in one of the given roles. */
+export async function loadParty(ctx: PostContext, partyId: string, ...roles: PartyRole[]) {
   const party = await ctx.tx.party.findFirst({ where: { id: partyId, businessId: ctx.businessId } });
   if (!party) throw notFound("Party");
-  if (party.kind !== role && party.kind !== "BOTH") {
-    throw badRequest(role === "SUPPLIER" ? "That party is not a supplier" : "That party is not a customer");
+  if (!roles.some((r) => ROLE_KINDS[r].includes(party.kind))) {
+    throw badRequest(`That party is not ${roles.map((r) => ROLE_LABEL[r]).join(" or ")}`);
   }
   return party;
 }
@@ -277,6 +292,18 @@ export class StockBook {
   }
 
   async save() {
+    // Devices each carry their own cost, so a phone model's confidence is the
+    // weakest among the devices still in stock here, not every device it has held.
+    const dirty = [...this.balances].filter(([, b]) => b.dirty).map(([id]) => id);
+    if (dirty.length) {
+      const devices = await this.ctx.tx.$queryRaw<{ variantId: string; rank: number }[]>`
+        SELECT "variantId", MAX(CASE "costConfidence" WHEN 'VERIFIED' THEN 0 WHEN 'ESTIMATED' THEN 1 ELSE 2 END)::int AS rank
+        FROM "SerialUnit"
+        WHERE "branchId" = ${this.branchId} AND "variantId" = ANY(${dirty}::text[]) AND "status" = 'IN_STOCK'
+        GROUP BY 1`;
+      const byRank: CostConfidence[] = ["VERIFIED", "ESTIMATED", "UNKNOWN"];
+      for (const d of devices) this.balances.get(d.variantId)!.costConfidence = byRank[d.rank]!;
+    }
     for (const [variantId, b] of this.balances) {
       if (!b.dirty) continue;
       if (b.quantity === 0) b.value = 0;
@@ -302,6 +329,18 @@ export async function lockSerials(ctx: PostContext, ids: string[]) {
   return ctx.tx.serialUnit.findMany({ where: { id: { in: rows.map((r) => r.id) } } });
 }
 export type LockedSerial = Awaited<ReturnType<typeof lockSerials>>[number];
+
+/**
+ * A device's latest movement, ignoring documents that were cancelled (their
+ * movement and its reversal cancel out). Tells which document a device's
+ * current state comes from.
+ */
+export function lastMovement(ctx: PostContext, serialUnitId: string) {
+  return ctx.tx.stockMovement.findFirst({
+    where: { serialUnitId, document: { status: { not: "CANCELLED" } } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+}
 
 export function assertDistinct(ids: string[]) {
   const seen = new Set<string>();

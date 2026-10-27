@@ -3,7 +3,7 @@ import { roleHas } from "@stockpilot/shared";
 import { audit } from "../audit.js";
 import { HttpError, badRequest, forbidden, notFound } from "../errors.js";
 import { canAccessBranch, tenantOf } from "../middleware/tenant.js";
-import { CREATE_PERMISSION, Journal, StockBook, assertDayOpen, lastClosedDay, lockDays, type PostContext } from "./core.js";
+import { CREATE_PERMISSION, Journal, StockBook, assertDayOpen, lastClosedDay, lastMovement, lockDays, type PostContext } from "./core.js";
 
 /** For each type, the status a device must be in to be reversed, and the status it returns to. */
 const SERIAL_REVERSAL: Partial<Record<string, { from: SerialStatus; to: SerialStatus }>> = {
@@ -12,6 +12,17 @@ const SERIAL_REVERSAL: Partial<Record<string, { from: SerialStatus; to: SerialSt
   OPENING_STOCK: { from: "IN_STOCK", to: "VOIDED" },
   ADJUSTMENT: { from: "WRITTEN_OFF", to: "IN_STOCK" },
   TRANSFER: { from: "IN_TRANSIT", to: "IN_STOCK" },
+  SALE_RETURN: { from: "IN_STOCK", to: "SOLD" },
+  PURCHASE_RETURN: { from: "RETURNED_TO_SUPPLIER", to: "IN_STOCK" },
+};
+
+/**
+ * Devices a return moved without a stock movement, because they were (or had
+ * been) written off as damaged: the status they must be in, and go back to.
+ */
+const DAMAGED_REVERSAL: Partial<Record<string, { from: SerialStatus; to: SerialStatus }>> = {
+  SALE_RETURN: { from: "RETURNED_DAMAGED", to: "SOLD" },
+  PURCHASE_RETURN: { from: "RETURNED_TO_SUPPLIER", to: "RETURNED_DAMAGED" },
 };
 
 /**
@@ -48,18 +59,17 @@ export async function cancelDocument(ctx: PostContext, documentId: string, reaso
   if (doc.type === "TRANSFER" && doc.status !== "IN_TRANSIT") {
     throw badRequest("A received transfer can't be cancelled; send the stock back with a new transfer");
   }
+  const returns = await ctx.tx.document.count({ where: { sourceDocumentId: doc.id, status: { not: "CANCELLED" } } });
+  if (returns > 0) throw new HttpError(409, "HAS_RETURNS", "Goods on this were returned. Cancel the return first.");
 
-  // Money: unlink payments. Receipts that paid a cancelled invoice stay with the party as an advance.
-  if (doc.type === "RECEIPT" || doc.type === "PAYMENT") {
-    const allocations = await ctx.tx.paymentAllocation.findMany({ where: { fromDocumentId: doc.id }, orderBy: { toDocumentId: "asc" } });
-    for (const a of allocations) {
-      await ctx.tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${a.toDocumentId} FOR UPDATE`;
-      await ctx.tx.document.update({ where: { id: a.toDocumentId }, data: { paidAmount: { decrement: a.amount } } });
-    }
-    await ctx.tx.paymentAllocation.deleteMany({ where: { fromDocumentId: doc.id } });
-  } else {
-    await ctx.tx.paymentAllocation.deleteMany({ where: { toDocumentId: doc.id } });
+  // Money: unlink payments. Receipts and credit notes that paid a cancelled
+  // invoice stay with the party as an advance; what this document settled is reopened.
+  const outgoing = await ctx.tx.paymentAllocation.findMany({ where: { fromDocumentId: doc.id, toDocumentId: { not: doc.id } }, orderBy: { toDocumentId: "asc" } });
+  for (const a of outgoing) {
+    await ctx.tx.$queryRaw`SELECT "id" FROM "Document" WHERE "id" = ${a.toDocumentId} FOR UPDATE`;
+    await ctx.tx.document.update({ where: { id: a.toDocumentId }, data: { paidAmount: { decrement: a.amount } } });
   }
+  await ctx.tx.paymentAllocation.deleteMany({ where: { OR: [{ fromDocumentId: doc.id }, { toDocumentId: doc.id }] } });
 
   const journal = new Journal();
   for (const e of doc.ledgerEntries) {
@@ -79,7 +89,7 @@ export async function cancelDocument(ctx: PostContext, documentId: string, reaso
       const reversal = { businessId: ctx.businessId, branchId: m.branchId, variantId: m.variantId, serialUnitId: m.serialUnitId, documentId: doc.id, lineId: m.lineId, businessDate: doc.businessDate, isReversal: true };
       if (m.serialUnitId) {
         const unit = units.find((u) => u.id === m.serialUnitId)!;
-        const last = await ctx.tx.stockMovement.findFirst({ where: { serialUnitId: unit.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+        const last = await lastMovement(ctx, unit.id);
         if (!rule || unit.status !== rule.from || unit.branchId !== doc.branchId || last?.documentId !== doc.id) {
           throw new HttpError(409, "SERIAL_MOVED_ON", `${unit.imei} has moved on since this document, so it can't be cancelled`, { serial: unit.imei });
         }
@@ -99,6 +109,22 @@ export async function cancelDocument(ctx: PostContext, documentId: string, reaso
       }
     }
     await book.save();
+  }
+
+  const damagedRule = DAMAGED_REVERSAL[doc.type];
+  if (damagedRule) {
+    const moved = new Set(doc.movements.flatMap((m) => (m.serialUnitId ? [m.serialUnitId] : [])));
+    const serials = await ctx.tx.lineSerial.findMany({ where: { line: { documentId: doc.id } }, select: { serialUnitId: true } });
+    const ids = serials.map((s) => s.serialUnitId).filter((id) => !moved.has(id)).sort();
+    if (ids.length) {
+      await ctx.tx.$queryRaw`SELECT "id" FROM "SerialUnit" WHERE "id" = ANY(${ids}::text[]) ORDER BY "id" FOR UPDATE`;
+      for (const unit of await ctx.tx.serialUnit.findMany({ where: { id: { in: ids } } })) {
+        if (unit.status !== damagedRule.from) {
+          throw new HttpError(409, "SERIAL_MOVED_ON", `${unit.imei} has moved on since this document, so it can't be cancelled`, { serial: unit.imei });
+        }
+        await ctx.tx.serialUnit.update({ where: { id: unit.id }, data: { status: damagedRule.to } });
+      }
+    }
   }
 
   await journal.write(ctx, doc.id, doc.businessDate, true);

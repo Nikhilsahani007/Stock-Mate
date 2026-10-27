@@ -33,6 +33,7 @@ export function AppShell() {
     { to: "reports", label: "Reports", show: can("report.view") || can("stock.view"), primary: true },
     { to: "day-close", label: "Day close", show: can("day.close") || can("report.view") },
     { to: "stock/entry", label: "Stock entry", show: can("stock.adjust") || can("stock.transfer") },
+    { to: "purchases/return", label: "Supplier return", show: can("purchase.create") },
     { to: "products", label: "Products", show: can("stock.view") },
     { to: "parties", label: "Customers", show: can("party.manage") },
     { to: "expenses", label: "Expenses", show: can("expense.record") },

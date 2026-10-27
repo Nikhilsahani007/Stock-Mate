@@ -15,7 +15,7 @@ This repository is a pnpm + Turborepo monorepo:
 Requirements: Node 22, pnpm 10, PostgreSQL 16 (or Docker).
 
 ```bash
-docker compose up -d                # Postgres with stockpilot and stockpilot_test databases
+docker compose up -d                # Postgres with stockpilot, stockpilot_test and stockpilot_e2e databases
 cp apps/api/.env.example apps/api/.env
 pnpm install
 pnpm db:migrate                     # apply migrations to the dev database
@@ -30,6 +30,15 @@ pnpm typecheck && pnpm build && pnpm test
 
 API tests run against a real Postgres database (`TEST_DATABASE_URL`, default
 `postgresql://stockpilot:stockpilot@localhost:5432/stockpilot_test`).
+
+Browser tests (Playwright, in `e2e/`) start the API and web app on their own ports against
+`E2E_DATABASE_URL` (default `stockpilot_e2e`), apply migrations, and drive the real UI. Each
+test signs up its own shop, so the database is never wiped. CI runs them too.
+
+```bash
+pnpm --filter @stockpilot/e2e exec playwright install chromium   # once
+pnpm e2e                                                          # E2E_SCREENSHOTS=dir saves screenshots
+```
 
 ## How tenancy and access work
 
@@ -61,7 +70,7 @@ rules live in `computeAccess` in `packages/shared/src/plans.ts`.
 Documents are what people write; posting derives two append-only ledgers from them.
 
 - **Documents**: purchase, sale, opening stock, adjustment, transfer, expense, customer
-  receipt, supplier payment. Each type posts through one function in `apps/api/src/posting/`
+  receipt, supplier payment, sale return (credit note), purchase return (debit note). Each type posts through one function in `apps/api/src/posting/`
   inside a single database transaction. Numbers are gap-free per branch, type and Indian
   fiscal year (`INV/2026-27/0001`).
 - **Stock ledger** (`StockMovement`, one row per IMEI for phones) and **stock balances**
@@ -92,7 +101,25 @@ Documents are what people write; posting derives two append-only ledgers from th
 - **Costs are private**: roles without `cost.view` (cashiers) never receive cost or stock
   value fields from the API.
 
-Not built yet: sale and purchase returns, backdated cost replay, month locking.
+- **Sale returns** (`POST /sale-returns`, credit note `CRN/…`) are made against an invoice.
+  Price, tax and cost come from the invoice line (partial returns split it exactly); the
+  client only says which units came back. Good goods go back on the shelf at the cost they
+  left at; damaged ones go to `RETURNED_DAMAGED` and are written off as stock loss. Money
+  not refunded first clears the invoice, then the customer's other open invoices, then stays
+  as an advance. A walk-in return must be refunded in full. An invoice with live returns
+  can't be cancelled until the returns are.
+- **Purchase returns** (`POST /purchase-returns`, debit note `DBN/…`) send stock or
+  damaged returns back to a supplier at the price they credit. GST input is reversed; the
+  gap between credit and cost is price variance (or recovered stock loss for damaged
+  phones). Credit not refunded settles the linked bill, then the supplier's oldest bills.
+- **EMI sales**: a `FINANCE` tender names the finance company (a `FINANCIER` party), which
+  then owes the shop that amount. Its payout is a receipt; fees it keeps back
+  (`deduction`) are a finance-charges expense. When an EMI phone is returned, a `FINANCE`
+  refund records the cancelled loan, up to what that company financed on the invoice.
+- **Invoices print** as an A4 PDF (`GET /documents/:id/pdf`, bundled DejaVu font for ₹)
+  or an 80 mm thermal receipt page in the web app. Neither shows cost.
+
+Not built yet: backdated cost replay, month locking.
 
 ## Reports
 
@@ -102,12 +129,12 @@ covers branches the member may see.
 
 | Report | What it shows | Who sees it |
 |---|---|---|
-| Sales | Bills, net sales before GST, GST, paid at counter vs credit; by day, branch, brand, category, product | `report.view` |
+| Sales | Bills, net sales before GST, GST, paid at counter vs credit, returns; by day, branch, brand, category, product | `report.view` |
 | Profit | Verified, estimated and unknown-cost sales **side by side, never added together**; expenses, stock loss, cash shortage; sales with a missing cost | `report.view` + `cost.view` |
-| Collections | Money in (counter and dues) and out (suppliers, expenses) by payment method and day | `report.view` |
+| Collections | Money in (counter, dues, supplier refunds) and out (suppliers, expenses, customer refunds) by payment method and day; EMI still to come from finance companies | `report.view` |
 | Stock | On-hand units, value at cost by confidence, value at sale price, low stock, in transit, phone age | `stock.view`; values only with `cost.view` |
-| Dues | Customer and supplier balances from the ledger, with aging of unpaid bills | `report.view` |
-| GST | Per GST branch: output tax by rate, input credit, net, B2B/B2C, B2B invoice list, HSN summary, invoice series | `report.view` |
+| Dues | Customer, supplier and finance-company balances from the ledger, with aging of unpaid bills | `report.view` |
+| GST | Per GST branch: output tax by rate (net of credit notes), input credit (net of debit notes), net, B2B/B2C, B2B invoice list, HSN summary, invoice series | `report.view` |
 | Branches | Sales, collections, expenses, profit and stock per branch | `report.view` |
 | My day | A cashier's own bills today, by payment method | `sale.create` |
 

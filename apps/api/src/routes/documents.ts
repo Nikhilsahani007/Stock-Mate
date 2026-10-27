@@ -5,8 +5,10 @@ import {
   checkDeviceId,
   expenseSchema,
   openingStockSchema,
+  purchaseReturnSchema,
   purchaseSchema,
   roleHas,
+  saleReturnSchema,
   saleSchema,
   settlementSchema,
   transferSchema,
@@ -22,7 +24,9 @@ import { cancelDocument } from "../posting/cancel.js";
 import { CREATE_PERMISSION, runPosting, type PostContext } from "../posting/core.js";
 import { postOpeningStock, postPurchase } from "../posting/inbound.js";
 import { postAdjustment, postSale, postTransfer, receiveTransfer } from "../posting/outbound.js";
+import { postPurchaseReturn, postSaleReturn } from "../posting/returns.js";
 import { postExpense, postSettlement } from "../posting/settlement.js";
+import { renderDocumentPdf } from "../pdf/document-pdf.js";
 import { canSeeCost } from "./stock.js";
 
 export const documentsRouter = Router({ mergeParams: true });
@@ -79,6 +83,8 @@ documentsRouter.post("/transfers", ...poster("stock.transfer", transferSchema, p
 documentsRouter.post("/expenses", ...poster("expense.record", expenseSchema, postExpense));
 documentsRouter.post("/receipts", ...poster("payment.record", settlementSchema, (ctx, i) => postSettlement(ctx, "RECEIPT", i)));
 documentsRouter.post("/supplier-payments", ...poster("payment.record", settlementSchema, (ctx, i) => postSettlement(ctx, "PAYMENT", i)));
+documentsRouter.post("/sale-returns", ...poster("sale.return", saleReturnSchema, postSaleReturn));
+documentsRouter.post("/purchase-returns", ...poster("purchase.create", purchaseReturnSchema, postPurchaseReturn));
 
 documentsRouter.post("/transfers/:documentId/receive", requirePermission("stock.transfer"), async (req, res) => {
   const id = param(req, "documentId");
@@ -138,6 +144,18 @@ documentsRouter.get("/documents/:documentId", async (req, res) => {
   res.json({ document: await loadDocument(req, param(req, "documentId")) });
 });
 
+/** The document as a printable A4 PDF. Prints no costs, whoever asks. */
+documentsRouter.get("/documents/:documentId/pdf", async (req, res) => {
+  const doc = await loadDocument(req, param(req, "documentId"));
+  const business = await prisma.business.findUniqueOrThrow({ where: { id: tenantOf(req).businessId }, select: { name: true } });
+  const pdf = await renderDocumentPdf(doc, business.name);
+  res
+    .type("application/pdf")
+    .set("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename="${doc.number.replaceAll("/", "-")}.pdf"`)
+    .set("Cache-Control", "private, no-store")
+    .send(pdf);
+});
+
 /** A document as the member may see it: costs and ledger only with the matching permissions. */
 async function loadDocument(req: Request, id: string) {
   const { businessId, role } = tenantOf(req);
@@ -148,14 +166,21 @@ async function loadDocument(req: Request, id: string) {
       toBranch: { select: { id: true, name: true } },
       party: true,
       createdBy: { select: { id: true, name: true } },
+      sourceDocument: { select: { id: true, number: true, type: true, businessDate: true } },
+      returns: { select: { id: true, number: true, type: true, status: true, total: true, businessDate: true, tenders: { where: { method: "FINANCE" }, select: { method: true, amount: true, party: { select: { id: true, name: true } } } } }, orderBy: { postedAt: "asc" } },
       lines: {
         orderBy: { position: "asc" },
         include: {
           variant: { include: { product: { select: { id: true, name: true, hsnCode: true, isSerialized: true } } } },
-          serials: { include: { serialUnit: { select: { id: true, imei: true, imei2: true } } } },
+          serials: { include: { serialUnit: { select: { id: true, imei: true, imei2: true, status: true } } } },
+          // What has come back against this line so far, for return screens.
+          returnedBy: {
+            where: { document: { status: { not: "CANCELLED" } } },
+            select: { quantity: true, serials: { select: { serialUnit: { select: { imei: true } } } } },
+          },
         },
       },
-      tenders: true,
+      tenders: { include: { party: { select: { id: true, name: true } } } },
       allocationsFrom: { include: { to: { select: { id: true, number: true, type: true } } } },
       allocationsTo: { include: { from: { select: { id: true, number: true, type: true } } } },
       ledgerEntries: roleHas(role, "report.view") ? { orderBy: { id: "asc" } } : false,

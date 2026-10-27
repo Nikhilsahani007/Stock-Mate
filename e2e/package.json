@@ -1,0 +1,15 @@
+{
+  "name": "@stockpilot/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3"
+  }
+}
