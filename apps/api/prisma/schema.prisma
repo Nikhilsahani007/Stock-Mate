@@ -48,6 +48,7 @@ model User {
 
   sessions    Session[]
   memberships Membership[]
+  dayCloses   DayClose[]   @relation("DayClosedBy")
   auditLogs   AuditLog[]   @relation("AuditActor")
   invitesSent Invitation[] @relation("InvitedBy")
   documents   Document[]   @relation("DocumentCreatedBy")
@@ -89,21 +90,22 @@ model Business {
   parties      Party[]
   serialUnits  SerialUnit[]
   documents    Document[]
+  dayCloses    DayClose[]
 }
 
 /// One per business. Payment processing comes after the MVP; this holds the
 /// trial and whatever plan the business is on.
 model Subscription {
-  id             String           @id @default(cuid())
-  businessId     String           @unique
-  business       Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  plan           PlanCode         @default(STARTER)
-  interval       BillingInterval  @default(MONTHLY)
-  trialStartedAt DateTime         @default(now())
+  id             String          @id @default(cuid())
+  businessId     String          @unique
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  plan           PlanCode        @default(STARTER)
+  interval       BillingInterval @default(MONTHLY)
+  trialStartedAt DateTime        @default(now())
   /// End of the last paid period. Null while on trial.
   paidThrough    DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 }
 
 model Branch {
@@ -124,10 +126,11 @@ model Branch {
   balances         StockBalance[]
   movements        StockMovement[]
   serialUnits      SerialUnit[]
-  documents        Document[]       @relation("DocumentBranch")
-  transfersIn      Document[]       @relation("TransferTarget")
+  documents        Document[]         @relation("DocumentBranch")
+  transfersIn      Document[]         @relation("TransferTarget")
   ledgerEntries    LedgerEntry[]
   documentCounters DocumentCounter[]
+  dayCloses        DayClose[]
 
   @@unique([businessId, name])
   @@unique([id, businessId])
@@ -239,6 +242,8 @@ enum DocumentType {
   EXPENSE
   RECEIPT
   PAYMENT
+  /// A branch's end-of-day cash count. Posts any shortage or excess and cash handed over.
+  DAY_CLOSE
 }
 
 enum DocumentStatus {
@@ -280,6 +285,14 @@ enum LedgerAccount {
   EXPENSE
   OPENING_EQUITY
   ROUND_OFF
+  CASH_OVER_SHORT
+  OWNER_DRAWINGS
+}
+
+/// Where cash taken out of the drawer at day close went.
+enum CashHandover {
+  BANK
+  OWNER
 }
 
 model Brand {
@@ -379,21 +392,21 @@ model Party {
 /// One physical device. Keeps the same row, and its whole history, across
 /// sales, returns and buy-backs.
 model SerialUnit {
-  id             String         @id @default(cuid())
+  id             String          @id @default(cuid())
   businessId     String
-  business       Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
   variantId      String
-  variant        Variant        @relation(fields: [variantId, businessId], references: [id, businessId])
+  variant        Variant         @relation(fields: [variantId, businessId], references: [id, businessId])
   branchId       String
-  branch         Branch         @relation(fields: [branchId, businessId], references: [id, businessId])
+  branch         Branch          @relation(fields: [branchId, businessId], references: [id, businessId])
   imei           String
   imei2          String?
   status         SerialStatus
   /// Cost of the purchase or opening line that brought it in last (specific identification).
   unitCost       Int
   costConfidence CostConfidence
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
   lines          LineSerial[]
   movements      StockMovement[]
 
@@ -448,41 +461,41 @@ model StockMovement {
 }
 
 model Document {
-  id               String           @id @default(cuid())
+  id               String              @id @default(cuid())
   businessId       String
-  business         Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business         Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
   branchId         String
-  branch           Branch           @relation("DocumentBranch", fields: [branchId, businessId], references: [id, businessId])
+  branch           Branch              @relation("DocumentBranch", fields: [branchId, businessId], references: [id, businessId])
   type             DocumentType
   status           DocumentStatus
   /// Gap-free per branch, type and fiscal year, e.g. SAL/2026-27/0001.
   number           String
   fiscalYear       String
-  businessDate     DateTime         @db.Date
+  businessDate     DateTime            @db.Date
   partyId          String?
-  party            Party?           @relation(fields: [partyId, businessId], references: [id, businessId])
+  party            Party?              @relation(fields: [partyId, businessId], references: [id, businessId])
   /// Receiving branch of a transfer.
   toBranchId       String?
-  toBranch         Branch?          @relation("TransferTarget", fields: [toBranchId, businessId], references: [id, businessId])
+  toBranch         Branch?             @relation("TransferTarget", fields: [toBranchId, businessId], references: [id, businessId])
   /// Branch had GST invoicing on when this was posted.
-  gstApplied       Boolean          @default(false)
-  pricesIncludeTax Boolean          @default(false)
-  interState       Boolean          @default(false)
-  taxableTotal     Int              @default(0)
-  taxTotal         Int              @default(0)
+  gstApplied       Boolean             @default(false)
+  pricesIncludeTax Boolean             @default(false)
+  interState       Boolean             @default(false)
+  taxableTotal     Int                 @default(0)
+  taxTotal         Int                 @default(0)
   /// Freight or handling on a purchase, spread over its lines by value.
-  otherCharges     Int              @default(0)
-  roundOff         Int              @default(0)
-  total            Int              @default(0)
+  otherCharges     Int                 @default(0)
+  roundOff         Int                 @default(0)
+  total            Int                 @default(0)
   /// Sum of payment allocations against this invoice or bill.
-  paidAmount       Int              @default(0)
+  paidAmount       Int                 @default(0)
   expenseCategory  ExpenseCategory?
   reason           String?
   notes            String?
   idempotencyKey   String?
   createdById      String
-  createdBy        User             @relation("DocumentCreatedBy", fields: [createdById], references: [id])
-  postedAt         DateTime         @default(now())
+  createdBy        User                @relation("DocumentCreatedBy", fields: [createdById], references: [id])
+  postedAt         DateTime            @default(now())
   receivedAt       DateTime?
   cancelledAt      DateTime?
   cancelReason     String?
@@ -492,6 +505,7 @@ model Document {
   allocationsTo    PaymentAllocation[] @relation("AllocationTo")
   movements        StockMovement[]
   ledgerEntries    LedgerEntry[]
+  dayClose         DayClose?
 
   @@unique([branchId, type, number])
   @@unique([businessId, idempotencyKey])
@@ -601,4 +615,46 @@ model DocumentCounter {
   last       Int          @default(0)
 
   @@id([branchId, type, fiscalYear])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: day close.
+// ---------------------------------------------------------------------------
+
+/// A branch's cash count at the end of a business day. Closing a day locks it:
+/// nothing more can be posted at that branch on or before that date until the
+/// close is reopened (which cancels its document). Only the latest close of a
+/// branch can be reopened. Closes are serialized per branch with an advisory lock.
+model DayClose {
+  id           String        @id @default(cuid())
+  businessId   String
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  branchId     String
+  branch       Branch        @relation(fields: [branchId, businessId], references: [id, businessId])
+  businessDate DateTime      @db.Date
+  documentId   String
+  document     Document      @relation(fields: [documentId, businessId], references: [id, businessId])
+  /// Cash the books say was in the drawer when the day began.
+  openingCash  Int
+  /// Cash already in the drawer before the first close, booked as opening balance.
+  openingFloat Int           @default(0)
+  cashIn       Int
+  cashOut      Int
+  expectedCash Int
+  countedCash  Int
+  /// Counted minus expected: negative is a shortage, positive an excess.
+  difference   Int
+  handedOver   Int           @default(0)
+  handedOverTo CashHandover?
+  /// Snapshot of the day's figures when it was closed.
+  summary      Json
+  notes        String?
+  closedById   String
+  closedBy     User          @relation("DayClosedBy", fields: [closedById], references: [id])
+  closedAt     DateTime      @default(now())
+  reopenedAt   DateTime?
+  reopenReason String?
+
+  @@unique([documentId, businessId])
+  @@index([businessId, branchId, businessDate])
 }
