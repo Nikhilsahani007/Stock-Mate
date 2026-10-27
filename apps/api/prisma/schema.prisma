@@ -231,6 +231,8 @@ enum PartyKind {
   CUSTOMER
   SUPPLIER
   BOTH
+  /// A finance company (Bajaj Finserv, HDB, brand EMI) that pays the shop for EMI sales.
+  FINANCIER
 }
 
 enum DocumentType {
@@ -244,6 +246,10 @@ enum DocumentType {
   PAYMENT
   /// A branch's end-of-day cash count. Posts any shortage or excess and cash handed over.
   DAY_CLOSE
+  /// Credit note: goods a customer brought back, at the original price and cost.
+  SALE_RETURN
+  /// Debit note: goods sent back to a supplier.
+  PURCHASE_RETURN
 }
 
 enum DocumentStatus {
@@ -258,6 +264,8 @@ enum PaymentMethod {
   UPI
   CARD
   BANK
+  /// EMI or consumer loan: the financier (Tender.partyId) owes the shop, not the customer.
+  FINANCE
 }
 
 enum ExpenseCategory {
@@ -266,6 +274,8 @@ enum ExpenseCategory {
   ELECTRICITY
   TRANSPORT
   OTHER
+  /// Fees or subvention a financier keeps back from an EMI payout.
+  FINANCE_CHARGES
 }
 
 enum LedgerAccount {
@@ -287,6 +297,8 @@ enum LedgerAccount {
   ROUND_OFF
   CASH_OVER_SHORT
   OWNER_DRAWINGS
+  /// Contra revenue: the taxable value of goods customers returned.
+  SALES_RETURNS
 }
 
 /// Where cash taken out of the drawer at day close went.
@@ -384,6 +396,7 @@ model Party {
   updatedAt  DateTime      @updatedAt
   documents  Document[]
   ledger     LedgerEntry[]
+  tenders    Tender[]
 
   @@unique([id, businessId])
   @@index([businessId, name])
@@ -474,6 +487,10 @@ model Document {
   businessDate     DateTime            @db.Date
   partyId          String?
   party            Party?              @relation(fields: [partyId, businessId], references: [id, businessId])
+  /// The invoice or bill a return was made against.
+  sourceDocumentId String?
+  sourceDocument   Document?           @relation("DocumentSource", fields: [sourceDocumentId, businessId], references: [id, businessId])
+  returns          Document[]          @relation("DocumentSource")
   /// Receiving branch of a transfer.
   toBranchId       String?
   toBranch         Branch?             @relation("TransferTarget", fields: [toBranchId, businessId], references: [id, businessId])
@@ -512,6 +529,7 @@ model Document {
   @@unique([id, businessId])
   @@index([businessId, type, businessDate])
   @@index([businessId, partyId])
+  @@index([sourceDocumentId])
 }
 
 model DocumentLine {
@@ -535,10 +553,17 @@ model DocumentLine {
   /// Stock value moved by this line at cost (COGS for a sale, landed cost for a purchase).
   costTotal      Int
   costConfidence CostConfidence?
+  /// On a return: the line of the original invoice or bill it reverses.
+  sourceLineId   String?
+  sourceLine     DocumentLine?   @relation("LineSource", fields: [sourceLineId, businessId], references: [id, businessId])
+  returnedBy     DocumentLine[]  @relation("LineSource")
+  /// On a sale return: the goods came back damaged, so they are written off instead of restocked.
+  damaged        Boolean         @default(false)
   serials        LineSerial[]
 
   @@unique([id, businessId])
   @@index([documentId])
+  @@index([sourceLineId])
 }
 
 model LineSerial {
@@ -562,8 +587,12 @@ model Tender {
   method     PaymentMethod
   amount     Int
   reference  String?
+  /// The financier on a FINANCE (EMI) tender.
+  partyId    String?
+  party      Party?        @relation(fields: [partyId, businessId], references: [id, businessId])
 
   @@index([documentId])
+  @@index([partyId])
 }
 
 /// Links a receipt, payment or counter tender to the invoice or bill it settles.

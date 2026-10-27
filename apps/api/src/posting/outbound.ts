@@ -46,14 +46,14 @@ function pickSerials(units: LockedSerial[], branchId: string, v: LoadedVariant, 
 }
 
 /** Removes devices or accessories from a branch's stock and returns the cost taken out. */
-async function moveOut(
+export async function moveOut(
   ctx: PostContext,
   book: StockBook,
   ref: { documentId: string; lineId: string; businessDate: Date },
   v: LoadedVariant,
   quantity: number,
   units: LockedSerial[],
-  serialStatus: "SOLD" | "WRITTEN_OFF" | "IN_TRANSIT",
+  serialStatus: "SOLD" | "WRITTEN_OFF" | "IN_TRANSIT" | "RETURNED_TO_SUPPLIER",
 ): Promise<{ value: number; confidence: CostConfidence }> {
   const base = { businessId: ctx.businessId, branchId: book.branchId, variantId: v.id, ...ref };
   if (!v.product.isSerialized) {
@@ -97,6 +97,9 @@ export async function postSale(ctx: PostContext, input: z.output<typeof saleSche
   const paid = input.tenders.reduce((a, t) => a + t.amount, 0);
   if (paid > total) throw badRequest("Payment is more than the invoice total");
   if (!party && paid !== total) throw badRequest("Choose a customer to leave part of the bill on credit");
+  const financed = input.tenders.filter((t) => t.method === "FINANCE");
+  if (financed.length > 0 && !party) throw badRequest("Choose the customer for an EMI sale");
+  for (const partyId of new Set(financed.map((t) => t.partyId!))) await loadParty(ctx, partyId, "FINANCIER");
 
   // Lock order everywhere: stock balances, then devices, then the number series.
   const book = await StockBook.lock(ctx, branch.id, [...variants.keys()]);
@@ -158,7 +161,8 @@ export async function postSale(ctx: PostContext, input: z.output<typeof saleSche
   journal.post({ account: "COGS", amount: cogs, branchId: branch.id });
   journal.post({ account: "INVENTORY", amount: -cogs, branchId: branch.id });
   for (const t of input.tenders) {
-    journal.post({ account: METHOD_ACCOUNT[t.method], amount: t.amount, branchId: branch.id });
+    // An EMI moves what is owed from the customer to the financier.
+    journal.post({ account: METHOD_ACCOUNT[t.method], amount: t.amount, branchId: branch.id, partyId: t.method === "FINANCE" ? t.partyId : null });
     journal.post({ account: "RECEIVABLE", amount: -t.amount, branchId: branch.id, partyId });
   }
   await journal.write(ctx, doc.id, date);

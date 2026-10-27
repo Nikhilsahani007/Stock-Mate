@@ -16,6 +16,8 @@ export const DOC_LABEL: Record<DocumentType, string> = {
   RECEIPT: "Receipt",
   PAYMENT: "Supplier payment",
   DAY_CLOSE: "Day close",
+  SALE_RETURN: "Sale return",
+  PURCHASE_RETURN: "Purchase return",
 };
 
 export function Documents() {

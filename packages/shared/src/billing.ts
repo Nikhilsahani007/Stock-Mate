@@ -124,3 +124,14 @@ export function checkDeviceId(value: string): { ok: true; isImei: boolean } | { 
   }
   return { ok: true, isImei: false };
 }
+
+/**
+ * The share of `total` that belongs to `quantity` more units when `done` of
+ * `of` units have already been taken. Taking units in any number of steps adds
+ * up to exactly `total`, so partial returns never leave rounding dust.
+ */
+export function proRata(total: number, of: number, done: number, quantity: number): number {
+  if (done + quantity > of) throw new Error("More units than the line has");
+  const upTo = (n: number) => (n === of ? total : roundHalfAway((total * n) / of));
+  return upTo(done + quantity) - upTo(done);
+}

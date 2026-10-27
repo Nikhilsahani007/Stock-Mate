@@ -5,14 +5,14 @@ import { audit } from "../audit.js";
 import { badRequest, notFound } from "../errors.js";
 import { Journal, METHOD_ACCOUNT, idempotencyKey, loadBranch, loadParty, nextNumber, resolveBusinessDate, type PostContext } from "./core.js";
 
-type TenderIn = { method: PaymentMethod; amount: number; reference?: string | undefined };
+type TenderIn = { method: PaymentMethod; amount: number; reference?: string | undefined; partyId?: string | undefined };
 
 /** Stores money taken or paid on a document and allocates it to the document itself. */
 export async function recordTenders(ctx: PostContext, documentId: string, tenders: TenderIn[]) {
   if (tenders.length === 0) return;
   const paid = tenders.reduce((a, t) => a + t.amount, 0);
   await ctx.tx.tender.createMany({
-    data: tenders.map((t) => ({ businessId: ctx.businessId, documentId, method: t.method, amount: t.amount, reference: t.reference ?? null })),
+    data: tenders.map((t) => ({ businessId: ctx.businessId, documentId, method: t.method, amount: t.amount, reference: t.reference ?? null, partyId: t.partyId ?? null })),
   });
   await ctx.tx.paymentAllocation.create({ data: { businessId: ctx.businessId, fromDocumentId: documentId, toDocumentId: documentId, amount: paid } });
   await ctx.tx.document.update({ where: { id: documentId }, data: { paidAmount: paid } });
@@ -57,13 +57,17 @@ export async function postExpense(ctx: PostContext, input: z.output<typeof expen
 /**
  * A customer receipt (RECEIPT) or a supplier payment (PAYMENT). Money is
  * allocated to the invoices or bills chosen, or oldest first. Anything left
- * over stays on the party's account as an advance.
+ * over stays on the party's account as an advance. A receipt can also come
+ * from a financier paying out EMI sales, less the fees they keep back.
  */
 export async function postSettlement(ctx: PostContext, type: "RECEIPT" | "PAYMENT", input: z.output<typeof settlementSchema>): Promise<string> {
   const branch = await loadBranch(ctx, input.branchId);
-  const party = await loadParty(ctx, input.partyId, type === "RECEIPT" ? "CUSTOMER" : "SUPPLIER");
+  const party = type === "RECEIPT" ? await loadParty(ctx, input.partyId, "CUSTOMER", "FINANCIER") : await loadParty(ctx, input.partyId, "SUPPLIER");
+  if (input.deduction > 0 && party.kind !== "FINANCIER") throw badRequest("Only a finance company's payout can have fees kept back");
   const { date, iso } = await resolveBusinessDate(ctx, branch.id, input.businessDate);
-  const total = input.tenders.reduce((a, t) => a + t.amount, 0);
+  const received = input.tenders.reduce((a, t) => a + t.amount, 0);
+  // What this settles on the party's account: the money, plus any fees the financier kept.
+  const total = received + input.deduction;
   const targetTypes: DocumentType[] = type === "RECEIPT" ? ["SALE"] : ["PURCHASE", "EXPENSE"];
 
   // Lock the party's open documents so two receipts can't over-settle one invoice.
@@ -105,6 +109,8 @@ export async function postSettlement(ctx: PostContext, type: "RECEIPT" | "PAYMEN
       businessDate: date,
       partyId: party.id,
       total,
+      /** On a receipt: fees or subvention the financier kept back. */
+      otherCharges: input.deduction,
       notes: input.notes ?? null,
       idempotencyKey: idempotencyKey(ctx),
       createdById: ctx.userId,
@@ -121,6 +127,7 @@ export async function postSettlement(ctx: PostContext, type: "RECEIPT" | "PAYMEN
   const journal = new Journal();
   const sign = type === "RECEIPT" ? 1 : -1;
   for (const t of input.tenders) journal.post({ account: METHOD_ACCOUNT[t.method], amount: sign * t.amount, branchId: branch.id });
+  journal.post({ account: "EXPENSE", amount: input.deduction, branchId: branch.id, expenseCategory: "FINANCE_CHARGES" });
   journal.post({ account: type === "RECEIPT" ? "RECEIVABLE" : "PAYABLE", amount: -sign * total, branchId: branch.id, partyId: party.id });
   await journal.write(ctx, doc.id, date);
   await audit(ctx.tx, ctx.req, {

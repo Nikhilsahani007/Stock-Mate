@@ -34,6 +34,8 @@ export const PERMISSIONS = [
   "document.cancel",
   /** Count the cash drawer and close a branch's business day. */
   "day.close",
+  /** Take goods back from a customer and issue a credit note. */
+  "sale.return",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -63,6 +65,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     "cost.view",
     "document.cancel",
     "day.close",
+    "sale.return",
   ],
   CASHIER: ["business.read", "branch.read", "sale.create", "payment.record", "party.manage", "stock.view", "day.close"],
   INVENTORY_STAFF: [

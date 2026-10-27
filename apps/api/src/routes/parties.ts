@@ -11,11 +11,11 @@ export const partiesRouter = Router({ mergeParams: true });
 partiesRouter.get("/", requirePermission("party.manage"), async (req, res) => {
   const { businessId } = tenantOf(req);
   const q = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 80) : "";
-  const kind = req.query.kind === "CUSTOMER" || req.query.kind === "SUPPLIER" ? req.query.kind : null;
+  const kind = req.query.kind === "CUSTOMER" || req.query.kind === "SUPPLIER" || req.query.kind === "FINANCIER" ? req.query.kind : null;
   const parties = await prisma.party.findMany({
     where: {
       businessId,
-      ...(kind ? { kind: { in: [kind, "BOTH"] } } : {}),
+      ...(kind === "FINANCIER" ? { kind } : kind ? { kind: { in: [kind, "BOTH"] } } : {}),
       ...(q ? { OR: [{ name: { contains: q, mode: "insensitive" } }, { phone: { startsWith: q } }] } : {}),
     },
     orderBy: { name: "asc" },

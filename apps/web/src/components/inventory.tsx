@@ -19,7 +19,8 @@ export function toPaise(value: string): number | null {
 export const paiseToInput = (paise: number | null | undefined) => (paise ? (paise / 100).toFixed(2).replace(/\.00$/, "") : "");
 
 const ACRONYMS = new Set(["UPI", "GST", "IMEI"]);
-export const label = (s: string) => (ACRONYMS.has(s) ? s : s.charAt(0) + s.slice(1).toLowerCase().replaceAll("_", " "));
+const LABELS: Record<string, string> = { FINANCE: "EMI / finance", FINANCE_CHARGES: "Finance charges", FINANCIER: "Finance company" };
+export const label = (s: string) => LABELS[s] ?? (ACRONYMS.has(s) ? s : s.charAt(0) + s.slice(1).toLowerCase().replaceAll("_", " "));
 
 /** The member's branches, plus the one they last worked in (remembered on this device). */
 export function useBranchChoice(businessId: string) {
@@ -129,7 +130,7 @@ export function PartyPicker({
   optional,
 }: {
   businessId: string;
-  kind: "CUSTOMER" | "SUPPLIER";
+  kind: "CUSTOMER" | "SUPPLIER" | "FINANCIER";
   value: string;
   onChange: (id: string) => void;
   optional?: string;
@@ -159,7 +160,7 @@ export function PartyPicker({
 
   return (
     <div className="field">
-      <span>{kind === "CUSTOMER" ? "Customer" : "Supplier"}</span>
+      <span>{kind === "CUSTOMER" ? "Customer" : kind === "SUPPLIER" ? "Supplier" : "Finance company"}</span>
       <div className="row">
         <select value={value} onChange={(e) => onChange(e.target.value)}>
           <option value="">{optional ?? "Choose…"}</option>
@@ -212,6 +213,39 @@ export function tendersToBody(values: Record<Method, string>) {
     const amount = toPaise(values[method]);
     return amount ? [{ method, amount }] : [];
   });
+}
+
+/** The EMI part of a sale: which finance company pays, how much, and their loan number. */
+export interface FinanceDraft {
+  partyId: string;
+  amount: string;
+  reference: string;
+}
+export const emptyFinance = (): FinanceDraft => ({ partyId: "", amount: "", reference: "" });
+
+export function FinanceInput({ businessId, value, onChange }: { businessId: string; value: FinanceDraft; onChange: (v: FinanceDraft) => void }) {
+  return (
+    <div className="row">
+      <PartyPicker businessId={businessId} kind="FINANCIER" value={value.partyId} onChange={(partyId) => onChange({ ...value, partyId })} optional="No EMI" />
+      {value.partyId && (
+        <>
+          <label className="field">
+            <span>Financed amount</span>
+            <input inputMode="decimal" value={value.amount} onChange={(e) => onChange({ ...value, amount: e.target.value })} placeholder="0" />
+          </label>
+          <label className="field">
+            <span>Loan number</span>
+            <input value={value.reference} onChange={(e) => onChange({ ...value, reference: e.target.value })} maxLength={80} />
+          </label>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function financeToBody(value: FinanceDraft) {
+  const amount = toPaise(value.amount);
+  return value.partyId && amount ? [{ method: "FINANCE" as const, amount, partyId: value.partyId, reference: value.reference.trim() || undefined }] : [];
 }
 
 /** Flags costs that are estimated or unknown; verified costs need no label. */

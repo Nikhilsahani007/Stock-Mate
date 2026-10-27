@@ -91,6 +91,12 @@ reportsRouter.get("/sales", requirePermission("report.view"), async (req, res) =
     lineGroup(Prisma.sql`p."name" || ' · ' || v."name"`),
   ]);
   const group = (rows: { name: string; units: bigint; taxable: bigint }[]) => rows.map((r) => ({ name: r.name, units: num(r.units), netSales: num(r.taxable) }));
+  const [returns] = await prisma.$queryRaw<{ notes: bigint; total: bigint; taxable: bigint; tax: bigint; refunded: bigint; units: bigint }[]>`
+    SELECT COUNT(*)::bigint AS notes, COALESCE(SUM(d."total"), 0)::bigint AS total,
+      COALESCE(SUM(d."taxableTotal"), 0)::bigint AS taxable, COALESCE(SUM(d."taxTotal"), 0)::bigint AS tax,
+      COALESCE((SELECT SUM(t."amount") FROM "Tender" t JOIN "Document" d ON d."id" = t."documentId" WHERE ${docsWhere("d", ["SALE_RETURN"], s)}), 0)::bigint AS refunded,
+      COALESCE((SELECT SUM(l."quantity") FROM "DocumentLine" l JOIN "Document" d ON d."id" = l."documentId" WHERE ${docsWhere("d", ["SALE_RETURN"], s)}), 0)::bigint AS units
+    FROM "Document" d WHERE ${docsWhere("d", ["SALE_RETURN"], s)}`;
 
   res.json({
     range: { from: s.from, to: s.to },
@@ -106,6 +112,17 @@ reportsRouter.get("/sales", requirePermission("report.view"), async (req, res) =
       onCredit: num(totals?.total) - num(totals?.tendered),
     },
     cancelled: { count: num(cancelled?.count), total: num(cancelled?.total) },
+    /** Credit notes for goods brought back, dated when they came back. */
+    returns: {
+      creditNotes: num(returns?.notes),
+      units: num(returns?.units),
+      netSales: num(returns?.taxable),
+      tax: num(returns?.tax),
+      billed: num(returns?.total),
+      refunded: num(returns?.refunded),
+    },
+    /** Net sales less returns, before GST. */
+    netSalesAfterReturns: num(totals?.taxable) - num(returns?.taxable),
     byDay: byDay.map((r) => ({ date: r.date, invoices: num(r.invoices), billed: num(r.total), netSales: num(r.taxable) })),
     byBranch: byBranch.map((r) => ({ branchId: r.branchId, name: r.name, invoices: num(r.invoices), billed: num(r.total), netSales: num(r.taxable) })),
     byBrand: group(byBrand),
@@ -118,41 +135,59 @@ reportsRouter.get("/sales", requirePermission("report.view"), async (req, res) =
 // Collections: money in and out by payment method
 // ---------------------------------------------------------------------------
 
+/** Money that changed hands. EMI (FINANCE) tenders are left out: the money comes later, from the financier. */
 async function tenderFlows(s: Scope) {
   return prisma.$queryRaw<{ date: string; branchId: string; type: string; method: PaymentMethod; amount: bigint }[]>`
     SELECT d."businessDate"::text AS date, d."branchId", d."type"::text AS type, t."method", SUM(t."amount")::bigint AS amount
     FROM "Tender" t JOIN "Document" d ON d."id" = t."documentId"
-    WHERE ${docsWhere("d", ["SALE", "RECEIPT", "PURCHASE", "EXPENSE", "PAYMENT"], s)}
+    WHERE ${docsWhere("d", ["SALE", "RECEIPT", "PURCHASE", "EXPENSE", "PAYMENT", "SALE_RETURN", "PURCHASE_RETURN"], s)} AND t."method" <> 'FINANCE'
     GROUP BY 1, 2, 3, 4 ORDER BY 1`;
 }
 
-const MONEY_IN = new Set(["SALE", "RECEIPT"]);
+const MONEY_IN = new Set(["SALE", "RECEIPT", "PURCHASE_RETURN"]);
 
 reportsRouter.get("/collections", requirePermission("report.view"), async (req, res) => {
   const s = await scopeOf(req);
   const rows = await tenderFlows(s);
-  const methods = new Map<PaymentMethod, { method: PaymentMethod; atCounter: number; receipts: number; paidOut: number }>();
+  const methods = new Map<PaymentMethod, { method: PaymentMethod; atCounter: number; receipts: number; supplierRefunds: number; paidOut: number; refunded: number }>();
   const days = new Map<string, { date: string; in: number; out: number }>();
   for (const r of rows) {
     const amount = num(r.amount);
-    const m = methods.get(r.method) ?? { method: r.method, atCounter: 0, receipts: 0, paidOut: 0 };
+    const m = methods.get(r.method) ?? { method: r.method, atCounter: 0, receipts: 0, supplierRefunds: 0, paidOut: 0, refunded: 0 };
     const d = days.get(r.date) ?? { date: r.date, in: 0, out: 0 };
     if (r.type === "SALE") m.atCounter += amount;
     else if (r.type === "RECEIPT") m.receipts += amount;
+    else if (r.type === "PURCHASE_RETURN") m.supplierRefunds += amount;
+    else if (r.type === "SALE_RETURN") m.refunded += amount;
     else m.paidOut += amount;
     if (MONEY_IN.has(r.type)) d.in += amount;
     else d.out += amount;
     methods.set(r.method, m);
     days.set(r.date, d);
   }
-  const byMethod = [...methods.values()].map((m) => ({ ...m, collected: m.atCounter + m.receipts, net: m.atCounter + m.receipts - m.paidOut }));
+  const byMethod = [...methods.values()].map((m) => ({
+    ...m,
+    collected: m.atCounter + m.receipts,
+    net: m.atCounter + m.receipts + m.supplierRefunds - m.paidOut - m.refunded,
+  }));
+  const [financed] = await prisma.$queryRaw<{ amount: bigint }[]>`
+    SELECT COALESCE(SUM(CASE WHEN d."type" = 'SALE' THEN t."amount" ELSE -t."amount" END), 0)::bigint AS amount
+    FROM "Tender" t JOIN "Document" d ON d."id" = t."documentId"
+    WHERE ${docsWhere("d", ["SALE", "SALE_RETURN"], s)} AND t."method" = 'FINANCE'`;
+  const sum = (k: "atCounter" | "receipts" | "collected" | "paidOut" | "refunded" | "supplierRefunds") => byMethod.reduce((a, m) => a + m[k], 0);
   res.json({
     range: { from: s.from, to: s.to },
     totals: {
-      atCounter: byMethod.reduce((a, m) => a + m.atCounter, 0),
-      receipts: byMethod.reduce((a, m) => a + m.receipts, 0),
-      collected: byMethod.reduce((a, m) => a + m.collected, 0),
-      paidOut: byMethod.reduce((a, m) => a + m.paidOut, 0),
+      atCounter: sum("atCounter"),
+      receipts: sum("receipts"),
+      collected: sum("collected"),
+      paidOut: sum("paidOut"),
+      /** Money handed back to customers for returns. */
+      refunded: sum("refunded"),
+      /** Money suppliers paid back for goods returned to them. */
+      supplierRefunds: sum("supplierRefunds"),
+      /** Sold on EMI (less loans cancelled by returns): owed by financiers, not yet collected. */
+      financed: num(financed?.amount),
     },
     byMethod,
     byDay: [...days.values()],
@@ -199,17 +234,20 @@ function splitByConfidence(rows: ConfidenceRow[]) {
 /**
  * Profit per sale line by cost confidence, grouped by `key`. Revenue is the
  * line's value after discount and before GST (for a non-GST branch, the full price).
+ * Returned goods take their revenue and cost back out, in the same confidence
+ * as the sale, on the day they came back. Damaged returns show as stock loss.
  */
 function profitRows(s: Scope, key: Prisma.Sql, label: Prisma.Sql = key) {
+  const sign = Prisma.sql`(CASE WHEN d."type" = 'SALE_RETURN' THEN -1 ELSE 1 END)`;
   return prisma.$queryRaw<(ConfidenceRow & { label: string })[]>`
     SELECT ${key} AS key, ${label} AS label, COALESCE(l."costConfidence", 'UNKNOWN') AS confidence,
-      COUNT(*)::bigint AS lines, SUM(l."quantity")::bigint AS units,
-      SUM(l."taxableValue")::bigint AS revenue, SUM(l."costTotal")::bigint AS cost
+      COUNT(*) FILTER (WHERE d."type" = 'SALE')::bigint AS lines, SUM(${sign} * l."quantity")::bigint AS units,
+      SUM(${sign} * l."taxableValue")::bigint AS revenue, SUM(${sign} * l."costTotal")::bigint AS cost
     FROM "DocumentLine" l JOIN "Document" d ON d."id" = l."documentId"
       JOIN "Variant" v ON v."id" = l."variantId" JOIN "Product" p ON p."id" = v."productId"
       LEFT JOIN "Brand" br ON br."id" = p."brandId"
       JOIN "Branch" b ON b."id" = d."branchId"
-    WHERE ${docsWhere("d", ["SALE"], s)}
+    WHERE ${docsWhere("d", ["SALE", "SALE_RETURN"], s)}
     GROUP BY 1, 2, 3`;
 }
 
@@ -221,10 +259,14 @@ function groupedProfit(rows: (ConfidenceRow & { label: string })[], limit: numbe
     .slice(0, limit);
 }
 
+/** Operating expenses by category from the ledger: expense bills, plus fees financiers kept back from EMI payouts. */
 async function expensesOf(s: Scope) {
   const rows = await prisma.$queryRaw<{ branchId: string; category: ExpenseCategory; total: bigint }[]>`
-    SELECT d."branchId", d."expenseCategory" AS category, SUM(d."total")::bigint AS total
-    FROM "Document" d WHERE ${docsWhere("d", ["EXPENSE"], s)} GROUP BY 1, 2`;
+    SELECT e."branchId", e."expenseCategory" AS category, SUM(e."debit" - e."credit")::bigint AS total
+    FROM "LedgerEntry" e
+    WHERE e."businessId" = ${s.businessId} AND e."account" = 'EXPENSE'
+      AND e."businessDate" BETWEEN ${s.from}::date AND ${s.to}::date ${inBranches(`e."branchId"`, s)}
+    GROUP BY 1, 2 HAVING SUM(e."debit" - e."credit") <> 0`;
   return rows.map((r) => ({ branchId: r.branchId, category: r.category, total: num(r.total) }));
 }
 
@@ -386,15 +428,16 @@ reportsRouter.get("/stock", requirePermission("stock.view"), async (req, res) =>
 // Dues: what customers owe and what is owed to suppliers, right now
 // ---------------------------------------------------------------------------
 
-async function partyBalances(s: Scope, account: "RECEIVABLE" | "PAYABLE", openTypes: string[]) {
+async function partyBalances(s: Scope, account: "RECEIVABLE" | "PAYABLE", openTypes: string[], financiers = false) {
   const sign = account === "RECEIVABLE" ? Prisma.sql`e."debit" - e."credit"` : Prisma.sql`e."credit" - e."debit"`;
+  const kind = financiers ? Prisma.sql`AND p."kind" = 'FINANCIER'` : Prisma.sql`AND p."kind" <> 'FINANCIER'`;
   const rows = await prisma.$queryRaw<{ partyId: string; name: string; phone: string | null; balance: bigint; oldest: string | null }[]>`
     SELECT p."id" AS "partyId", p."name", p."phone", SUM(${sign})::bigint AS balance,
       (SELECT MIN(d."businessDate")::text FROM "Document" d
         WHERE d."businessId" = ${s.businessId} AND d."partyId" = p."id" AND d."status" = 'POSTED'
           AND d."type"::text = ANY(${openTypes}::text[]) AND d."paidAmount" < d."total" ${inBranches(`d."branchId"`, s)}) AS oldest
     FROM "LedgerEntry" e JOIN "Party" p ON p."id" = e."partyId"
-    WHERE e."businessId" = ${s.businessId} AND e."account" = ${account}::"LedgerAccount" ${inBranches(`e."branchId"`, s)}
+    WHERE e."businessId" = ${s.businessId} AND e."account" = ${account}::"LedgerAccount" ${kind} ${inBranches(`e."branchId"`, s)}
     GROUP BY 1, 2, 3 HAVING SUM(${sign}) <> 0
     ORDER BY 4 DESC`;
   return rows.map((r) => ({ partyId: r.partyId, name: r.name, phone: r.phone, balance: num(r.balance), oldestOpen: r.oldest }));
@@ -415,11 +458,12 @@ async function agingOf(s: Scope, types: string[]) {
 
 reportsRouter.get("/dues", requirePermission("report.view"), async (req, res) => {
   const s = await scopeOf(req);
-  const [customers, suppliers, customerAging, supplierAging] = await Promise.all([
+  const [customers, suppliers, customerAging, supplierAging, financiers] = await Promise.all([
     partyBalances(s, "RECEIVABLE", ["SALE"]),
     partyBalances(s, "PAYABLE", ["PURCHASE", "EXPENSE"]),
     agingOf(s, ["SALE"]),
     agingOf(s, ["PURCHASE", "EXPENSE"]),
+    partyBalances(s, "RECEIVABLE", [], true),
   ]);
   const owed = (rows: { balance: number }[]) => rows.filter((r) => r.balance > 0).reduce((a, r) => a + r.balance, 0);
   const advances = (rows: { balance: number }[]) => rows.filter((r) => r.balance < 0).reduce((a, r) => a - r.balance, 0);
@@ -429,6 +473,8 @@ reportsRouter.get("/dues", requirePermission("report.view"), async (req, res) =>
     customers: { totalDue: owed(customers), advances: advances(customers), aging: customerAging, parties: customers },
     /** Positive balance: the shop owes the supplier. Negative: paid in advance. */
     suppliers: { totalDue: owed(suppliers), advances: advances(suppliers), aging: supplierAging, parties: suppliers },
+    /** EMI payouts finance companies still owe the shop. */
+    financiers: { totalDue: owed(financiers), parties: financiers },
   });
 });
 
@@ -445,12 +491,15 @@ interface TaxRow {
   igst: bigint;
 }
 
+/** Tax by rate on sales (less credit notes) or purchases (less debit notes). */
 function taxByRate(type: "SALE" | "PURCHASE", s: Scope) {
+  const back = type === "SALE" ? "SALE_RETURN" : "PURCHASE_RETURN";
+  const sign = Prisma.sql`(CASE WHEN d."type"::text = ${back} THEN -1 ELSE 1 END)`;
   return prisma.$queryRaw<TaxRow[]>`
-    SELECT d."branchId", l."gstRateBps" AS rate, SUM(l."taxableValue")::bigint AS taxable,
-      SUM(l."cgst")::bigint AS cgst, SUM(l."sgst")::bigint AS sgst, SUM(l."igst")::bigint AS igst
+    SELECT d."branchId", l."gstRateBps" AS rate, SUM(${sign} * l."taxableValue")::bigint AS taxable,
+      SUM(${sign} * l."cgst")::bigint AS cgst, SUM(${sign} * l."sgst")::bigint AS sgst, SUM(${sign} * l."igst")::bigint AS igst
     FROM "DocumentLine" l JOIN "Document" d ON d."id" = l."documentId"
-    WHERE ${docsWhere("d", [type], s)} AND d."gstApplied" = true
+    WHERE ${docsWhere("d", [type, back], s)} AND d."gstApplied" = true
     GROUP BY 1, 2 ORDER BY 2`;
 }
 
@@ -467,15 +516,17 @@ reportsRouter.get("/gst", requirePermission("report.view"), async (req, res) => 
     orderBy: { createdAt: "asc" },
   });
   const sales = Prisma.sql`${docsWhere("d", ["SALE"], s)} AND d."gstApplied" = true`;
-  const [outward, inward, hsn, split, b2b, docs] = await Promise.all([
+  const salesAndReturns = Prisma.sql`${docsWhere("d", ["SALE", "SALE_RETURN"], s)} AND d."gstApplied" = true`;
+  const sign = Prisma.sql`(CASE WHEN d."type" = 'SALE_RETURN' THEN -1 ELSE 1 END)`;
+  const [outward, inward, hsn, split, b2b, docs, notes] = await Promise.all([
     taxByRate("SALE", s),
     taxByRate("PURCHASE", s),
     prisma.$queryRaw<(TaxRow & { hsn: string; units: bigint })[]>`
-      SELECT d."branchId", COALESCE(p."hsnCode", '') AS hsn, l."gstRateBps" AS rate, SUM(l."quantity")::bigint AS units,
-        SUM(l."taxableValue")::bigint AS taxable, SUM(l."cgst")::bigint AS cgst, SUM(l."sgst")::bigint AS sgst, SUM(l."igst")::bigint AS igst
+      SELECT d."branchId", COALESCE(p."hsnCode", '') AS hsn, l."gstRateBps" AS rate, SUM(${sign} * l."quantity")::bigint AS units,
+        SUM(${sign} * l."taxableValue")::bigint AS taxable, SUM(${sign} * l."cgst")::bigint AS cgst, SUM(${sign} * l."sgst")::bigint AS sgst, SUM(${sign} * l."igst")::bigint AS igst
       FROM "DocumentLine" l JOIN "Document" d ON d."id" = l."documentId"
         JOIN "Variant" v ON v."id" = l."variantId" JOIN "Product" p ON p."id" = v."productId"
-      WHERE ${sales} GROUP BY 1, 2, 3 ORDER BY 2, 3`,
+      WHERE ${salesAndReturns} GROUP BY 1, 2, 3 ORDER BY 2, 3`,
     prisma.$queryRaw<{ branchId: string; b2b: boolean; invoices: bigint; taxable: bigint; tax: bigint }[]>`
       SELECT d."branchId", (pa."gstin" IS NOT NULL) AS b2b, COUNT(*)::bigint AS invoices,
         SUM(d."taxableTotal")::bigint AS taxable, SUM(d."taxTotal")::bigint AS tax
@@ -493,6 +544,9 @@ reportsRouter.get("/gst", requirePermission("report.view"), async (req, res) => 
       WHERE d."businessId" = ${s.businessId} AND d."type" = 'SALE' AND d."gstApplied" = true
         AND d."businessDate" BETWEEN ${s.from}::date AND ${s.to}::date ${inBranches(`d."branchId"`, s)}
       GROUP BY 1`,
+    prisma.$queryRaw<{ branchId: string; count: bigint; taxable: bigint; tax: bigint }[]>`
+      SELECT d."branchId", COUNT(*)::bigint AS count, SUM(d."taxableTotal")::bigint AS taxable, SUM(d."taxTotal")::bigint AS tax
+      FROM "Document" d WHERE ${docsWhere("d", ["SALE_RETURN"], s)} AND d."gstApplied" = true GROUP BY 1`,
   ]);
 
   const result = branches
@@ -503,6 +557,7 @@ reportsRouter.get("/gst", requirePermission("report.view"), async (req, res) => 
       const outputTax = out.reduce((a, r) => a + r.tax, 0);
       const inputTax = inn.reduce((a, r) => a + r.tax, 0);
       const d = docs.find((x) => x.branchId === b.id);
+      const cn = notes.find((x) => x.branchId === b.id);
       const sp = (isB2b: boolean) => {
         const r = split.find((x) => x.branchId === b.id && x.b2b === isB2b);
         return { invoices: num(r?.invoices), taxable: num(r?.taxable), tax: num(r?.tax) };
@@ -523,6 +578,8 @@ reportsRouter.get("/gst", requirePermission("report.view"), async (req, res) => 
         hsn: hsn.filter((r) => r.branchId === b.id).map((r) => ({ hsn: r.hsn, rate: r.rate, units: num(r.units), ...taxView(r) })),
         b2bInvoices: b2b.filter((r) => r.branchId === b.id).map(({ branchId: _b, ...r }) => r),
         documents: d ? { first: d.first, last: d.last, issued: num(d.issued), cancelled: num(d.cancelled) } : null,
+        /** Credit notes issued for returns; already taken off the output tax above. */
+        creditNotes: { count: num(cn?.count), taxable: num(cn?.taxable), tax: num(cn?.tax) },
       };
     });
   res.json({ range: { from: s.from, to: s.to }, branches: result });
@@ -542,8 +599,10 @@ reportsRouter.get("/branches", requirePermission("report.view"), async (req, res
   });
   const [sales, flows, expenses, other, profit, stock] = await Promise.all([
     prisma.$queryRaw<{ branchId: string; invoices: bigint; total: bigint; taxable: bigint }[]>`
-      SELECT d."branchId", COUNT(*)::bigint AS invoices, SUM(d."total")::bigint AS total, SUM(d."taxableTotal")::bigint AS taxable
-      FROM "Document" d WHERE ${docsWhere("d", ["SALE"], s)} GROUP BY 1`,
+      SELECT d."branchId", COUNT(*) FILTER (WHERE d."type" = 'SALE')::bigint AS invoices,
+        SUM(CASE WHEN d."type" = 'SALE' THEN d."total" ELSE -d."total" END)::bigint AS total,
+        SUM(CASE WHEN d."type" = 'SALE' THEN d."taxableTotal" ELSE -d."taxableTotal" END)::bigint AS taxable
+      FROM "Document" d WHERE ${docsWhere("d", ["SALE", "SALE_RETURN"], s)} GROUP BY 1`,
     tenderFlows(s),
     expensesOf(s),
     otherCostsOf(s),
@@ -567,7 +626,7 @@ reportsRouter.get("/branches", requirePermission("report.view"), async (req, res
         invoices: num(sale?.invoices),
         billed: num(sale?.total),
         netSales: num(sale?.taxable),
-        collected: flows.filter((f) => f.branchId === b.id && MONEY_IN.has(f.type)).reduce((a, f) => a + num(f.amount), 0),
+        collected: flows.filter((f) => f.branchId === b.id && (f.type === "SALE" || f.type === "RECEIPT")).reduce((a, f) => a + num(f.amount), 0),
         expenses: expenseTotal,
         stockUnits: num(st?.units),
         ...(showCost

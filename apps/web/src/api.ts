@@ -87,7 +87,7 @@ export interface Product {
 
 export interface Party {
   id: string;
-  kind: "CUSTOMER" | "SUPPLIER" | "BOTH";
+  kind: "CUSTOMER" | "SUPPLIER" | "BOTH" | "FINANCIER";
   name: string;
   phone: string | null;
   gstin: string | null;
@@ -127,7 +127,18 @@ export interface SerialUnit {
   costConfidence?: Confidence;
 }
 
-export type DocumentType = "PURCHASE" | "SALE" | "OPENING_STOCK" | "ADJUSTMENT" | "TRANSFER" | "EXPENSE" | "RECEIPT" | "PAYMENT" | "DAY_CLOSE";
+export type DocumentType =
+  | "PURCHASE"
+  | "SALE"
+  | "OPENING_STOCK"
+  | "ADJUSTMENT"
+  | "TRANSFER"
+  | "EXPENSE"
+  | "RECEIPT"
+  | "PAYMENT"
+  | "DAY_CLOSE"
+  | "SALE_RETURN"
+  | "PURCHASE_RETURN";
 
 export interface DocumentSummary {
   id: string;
@@ -156,8 +167,12 @@ export interface DocumentLine {
   lineTotal: number;
   costTotal?: number;
   costConfidence?: Confidence | null;
+  sourceLineId: string | null;
+  damaged: boolean;
   variant: Variant & { product: { id: string; name: string; hsnCode: string | null; isSerialized: boolean } };
-  serials: { serialUnit: { id: string; imei: string; imei2: string | null } }[];
+  serials: { serialUnit: { id: string; imei: string; imei2: string | null; status: string } }[];
+  /** What has come back against this line so far (not cancelled). */
+  returnedBy: { quantity: number; serials: { serialUnit: { imei: string } }[] }[];
 }
 
 export interface DocumentDetail extends Omit<DocumentSummary, "party"> {
@@ -176,7 +191,9 @@ export interface DocumentDetail extends Omit<DocumentSummary, "party"> {
   party: Party | null;
   createdBy: { id: string; name: string };
   lines: DocumentLine[];
-  tenders: { id: string; method: string; amount: number; reference: string | null }[];
+  tenders: { id: string; method: string; amount: number; reference: string | null; party: { id: string; name: string } | null }[];
+  sourceDocument: { id: string; number: string; type: DocumentType; businessDate: string } | null;
+  returns: { id: string; number: string; type: DocumentType; status: string; total: number; businessDate: string; tenders: { method: string; amount: number; party: { id: string; name: string } | null }[] }[];
   allocationsFrom: { id: string; amount: number; to: { id: string; number: string; type: DocumentType } }[];
   allocationsTo: { id: string; amount: number; from: { id: string; number: string; type: DocumentType } }[];
 }

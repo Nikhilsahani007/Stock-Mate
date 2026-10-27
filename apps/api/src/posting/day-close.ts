@@ -12,6 +12,8 @@ export interface DaySummary {
   /** What was left on credit: sales total minus what was paid at the counter. */
   creditGiven: number;
   cancelledSales: { count: number; total: number };
+  /** Credit notes issued: goods customers brought back. */
+  returns: { count: number; total: number };
   /** Money taken (in) and paid (out) by method, from posted documents of the day. */
   tenders: { method: PaymentMethod; in: number; out: number }[];
   /** Cash in and out of the drawer by kind of document, including cancellations. */
@@ -48,10 +50,13 @@ export async function computeDay(tx: Tx, businessId: string, branchId: string, i
   const [cancelled] = await tx.$queryRaw<{ count: bigint; total: bigint | null }[]>`
     SELECT COUNT(*)::bigint AS count, SUM("total")::bigint AS total FROM "Document"
     WHERE "businessId" = ${businessId} AND "branchId" = ${branchId} AND "type" = 'SALE' AND "status" = 'CANCELLED' AND "businessDate" = ${iso}::date`;
+  const [returns] = await tx.$queryRaw<{ count: bigint; total: bigint | null }[]>`
+    SELECT COUNT(*)::bigint AS count, SUM("total")::bigint AS total FROM "Document"
+    WHERE "businessId" = ${businessId} AND "branchId" = ${branchId} AND "type" = 'SALE_RETURN' AND "status" = 'POSTED' AND "businessDate" = ${iso}::date`;
   const tenders = await tx.$queryRaw<{ method: PaymentMethod; in: bigint; out: bigint }[]>`
     SELECT t."method",
-      SUM(CASE WHEN d."type" IN ('SALE', 'RECEIPT') THEN t."amount" ELSE 0 END)::bigint AS in,
-      SUM(CASE WHEN d."type" IN ('PURCHASE', 'EXPENSE', 'PAYMENT') THEN t."amount" ELSE 0 END)::bigint AS out
+      SUM(CASE WHEN d."type" IN ('SALE', 'RECEIPT', 'PURCHASE_RETURN') THEN t."amount" ELSE 0 END)::bigint AS in,
+      SUM(CASE WHEN d."type" IN ('PURCHASE', 'EXPENSE', 'PAYMENT', 'SALE_RETURN') THEN t."amount" ELSE 0 END)::bigint AS out
     FROM "Tender" t JOIN "Document" d ON d."id" = t."documentId"
     WHERE d."businessId" = ${businessId} AND d."branchId" = ${branchId} AND d."status" = 'POSTED' AND d."businessDate" = ${iso}::date
     GROUP BY t."method" ORDER BY t."method"`;
@@ -65,6 +70,7 @@ export async function computeDay(tx: Tx, businessId: string, branchId: string, i
       sales: { count: num(sales?.count), total: num(sales?.total), taxable: num(sales?.taxable), tax: num(sales?.tax) },
       creditGiven: num(sales?.total) - num(sales?.tendered),
       cancelledSales: { count: num(cancelled?.count), total: num(cancelled?.total) },
+      returns: { count: num(returns?.count), total: num(returns?.total) },
       tenders: tenders.map((t) => ({ method: t.method, in: num(t.in), out: num(t.out) })),
       cash: cashRows,
     },

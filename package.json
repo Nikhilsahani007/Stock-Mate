@@ -9,6 +9,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "e2e": "pnpm --filter @stockpilot/e2e e2e",
     "db:migrate": "pnpm --filter @stockpilot/api db:migrate",
     "db:generate": "pnpm --filter @stockpilot/api db:generate"
   },

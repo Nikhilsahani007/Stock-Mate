@@ -83,7 +83,9 @@ describe("sales, collections and dues", () => {
     expect(sales.body.byDay).toEqual([{ date: TODAY, invoices: 3, billed: 3_600_000, netSales: 3_600_000 }]);
 
     const col = await shop.c.get(`${shop.base}/reports/collections`).expect(200);
-    expect(col.body.byMethod).toEqual([{ method: "CASH", atCounter: 3_600_000, receipts: 0, paidOut: 50_000, collected: 3_600_000, net: 3_550_000 }]);
+    expect(col.body.byMethod).toEqual([
+      { method: "CASH", atCounter: 3_600_000, receipts: 0, supplierRefunds: 0, paidOut: 50_000, refunded: 0, collected: 3_600_000, net: 3_550_000 },
+    ]);
 
     // Nothing yesterday
     const empty = await shop.c.get(`${shop.base}/reports/sales?from=${YESTERDAY}&to=${YESTERDAY}`).expect(200);

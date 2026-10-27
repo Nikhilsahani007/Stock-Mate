@@ -5,7 +5,20 @@ import { api, newKey, postDocument, type PostResult, type SerialUnit } from "../
 import { useBusiness } from "../components/AppShell";
 import { ErrorText } from "../components/Field";
 import { LineEditor, lineQuantity, newLine, type LineDraft } from "../components/LineItems";
-import { BranchSelect, PartyPicker, TenderInputs, emptyTenders, rupees, tendersToBody, toPaise, useBranchChoice, useCatalog } from "../components/inventory";
+import {
+  BranchSelect,
+  FinanceInput,
+  PartyPicker,
+  TenderInputs,
+  emptyFinance,
+  emptyTenders,
+  financeToBody,
+  rupees,
+  tendersToBody,
+  toPaise,
+  useBranchChoice,
+  useCatalog,
+} from "../components/inventory";
 
 export function NewSale() {
   const { businessId } = useBusiness();
@@ -15,6 +28,8 @@ export function NewSale() {
   const [partyId, setPartyId] = useState("");
   const [lines, setLines] = useState<LineDraft[]>([newLine()]);
   const [tenders, setTenders] = useState(emptyTenders());
+  const [finance, setFinance] = useState(emptyFinance());
+  const [emi, setEmi] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // One key per sale on screen, so a double tap or retry never bills twice.
@@ -35,7 +50,8 @@ export function NewSale() {
     }
     return roundInvoice(exact);
   }, [lines, options, branch]);
-  const paid = tendersToBody(tenders).reduce((a, t) => a + t.amount, 0);
+  const financed = emi ? financeToBody(finance).reduce((a, t) => a + t.amount, 0) : 0;
+  const paid = tendersToBody(tenders).reduce((a, t) => a + t.amount, 0) + financed;
 
   /** Scanning an IMEI adds that phone as its own line, priced from the catalog. */
   async function onScan(e: FormEvent<HTMLFormElement>) {
@@ -77,12 +93,12 @@ export function NewSale() {
             if (unitPrice === null) throw new Error("Check the prices: use numbers like 1599 or 1599.50");
             return { variantId: l.variantId, quantity: lineQuantity(l, o), unitPrice, discount: toPaise(l.discount) ?? 0, serials: l.serials };
           }),
-        tenders: tendersToBody(tenders),
+        tenders: [...tendersToBody(tenders), ...(emi ? financeToBody(finance) : [])],
       };
       if (body.lines.length === 0) throw new Error("Add at least one item");
       const res = await postDocument<PostResult>(`/businesses/${businessId}/sales`, body, key);
       setKey(newKey());
-      void navigate(`../documents/${res.document.id}`);
+      void navigate(`../documents/${res.document.id}?print=1`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -124,6 +140,12 @@ export function NewSale() {
           {branch?.gstEnabled && <span className="muted"> incl. GST</span>}
         </p>
         <TenderInputs values={tenders} onChange={setTenders} />
+        <label className="check">
+          <input type="checkbox" checked={emi} onChange={(e) => setEmi(e.target.checked)} />
+          Paid partly or fully on EMI (finance company pays the shop)
+        </label>
+        {emi && <FinanceInput businessId={businessId} value={finance} onChange={setFinance} />}
+        {emi && !partyId && <p className="muted small">Choose the customer above: the finance company's loan is in their name.</p>}
         <div className="row">
           <button type="button" className="secondary" onClick={() => setTenders({ ...emptyTenders(), CASH: String(preview.total / 100) })}>
             All cash
