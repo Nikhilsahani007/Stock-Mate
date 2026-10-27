@@ -1,0 +1,184 @@
+// StockPilot schema. Every tenant-owned table carries businessId, and child
+// tables reference their parent by (id, businessId) so the database itself
+// refuses links across businesses.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  BRANCH_MANAGER
+  CASHIER
+  INVENTORY_STAFF
+  ACCOUNTANT
+}
+
+enum MembershipStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum PlanCode {
+  STARTER
+  GROWTH
+  PRO
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  name            String
+  passwordHash    String
+  /// Platform staff. Grants no tenant data access by itself.
+  isPlatformAdmin Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sessions    Session[]
+  memberships Membership[]
+  auditLogs   AuditLog[]   @relation("AuditActor")
+  invitesSent Invitation[] @relation("InvitedBy")
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  /// SHA-256 of the opaque token. The raw token is only ever held by the client.
+  tokenHash  String    @unique
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+}
+
+model Business {
+  id        String   @id @default(cuid())
+  name      String
+  timezone  String   @default("Asia/Kolkata")
+  currency  String   @default("INR")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription Subscription?
+  branches     Branch[]
+  memberships  Membership[]
+  invitations  Invitation[]
+  auditLogs    AuditLog[]
+}
+
+/// One per business. Payment processing comes after the MVP; this holds the
+/// trial and whatever plan the business is on.
+model Subscription {
+  id             String           @id @default(cuid())
+  businessId     String           @unique
+  business       Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  plan           PlanCode         @default(STARTER)
+  interval       BillingInterval  @default(MONTHLY)
+  trialStartedAt DateTime         @default(now())
+  /// End of the last paid period. Null while on trial.
+  paidThrough    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model Branch {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  address    String?
+  phone      String?
+  /// GST invoicing is an optional per-branch setting.
+  gstEnabled Boolean   @default(false)
+  gstin      String?
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  memberAccess MembershipBranch[]
+
+  @@unique([businessId, name])
+  @@unique([id, businessId])
+}
+
+model Membership {
+  id         String           @id @default(cuid())
+  businessId String
+  business   Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role
+  status     MembershipStatus @default(ACTIVE)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  branches MembershipBranch[]
+
+  @@unique([businessId, userId])
+  @@unique([id, businessId])
+  @@index([userId])
+}
+
+/// Branches a member may access. Only used for roles that are not all-branch roles.
+model MembershipBranch {
+  membershipId String
+  branchId     String
+  businessId   String
+  membership   Membership @relation(fields: [membershipId, businessId], references: [id, businessId], onDelete: Cascade)
+  branch       Branch     @relation(fields: [branchId, businessId], references: [id, businessId], onDelete: Cascade)
+
+  @@id([membershipId, branchId])
+  @@index([branchId])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  businessId  String
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  email       String
+  role        Role
+  branchIds   String[]
+  tokenHash   String    @unique
+  invitedById String
+  invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id])
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([businessId])
+}
+
+/// Append-only record of important actions.
+model AuditLog {
+  id          String    @id @default(cuid())
+  businessId  String?
+  business    Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  actor       User?     @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  action      String
+  entityType  String?
+  entityId    String?
+  metadata    Json?
+  ip          String?
+  createdAt   DateTime  @default(now())
+
+  @@index([businessId, createdAt])
+}
