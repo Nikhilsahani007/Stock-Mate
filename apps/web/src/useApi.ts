@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 
-/** Loads a GET endpoint and exposes a reload function. */
+/** Loads a GET endpoint and exposes a reload function. An empty path waits (e.g. until a branch is chosen). */
 export function useApi<T>(path: string) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
+    if (!path) return;
     try {
       setData(await api<T>(path));
       setError(null);

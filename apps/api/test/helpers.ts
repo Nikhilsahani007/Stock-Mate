@@ -6,7 +6,7 @@ export const app = createApp();
 
 export async function resetDb() {
   await prisma.$executeRawUnsafe(
-    `TRUNCATE "AuditLog", "Invitation", "MembershipBranch", "Membership", "Branch", "Subscription", "Business", "Session", "User" CASCADE`,
+    `TRUNCATE "LedgerEntry", "StockMovement", "PaymentAllocation", "Tender", "LineSerial", "DocumentLine", "Document", "DocumentCounter", "StockBalance", "SerialUnit", "Party", "Variant", "Product", "Brand", "Category", "AuditLog", "Invitation", "MembershipBranch", "Membership", "Branch", "Subscription", "Business", "Session", "User" CASCADE`,
   );
 }
 
@@ -59,3 +59,64 @@ export async function addMember(
 }
 
 export { prisma };
+
+/** A valid 15-digit IMEI (correct Luhn check digit) built from a 14-digit body. */
+export function imei(n: number): string {
+  const body = String(35_000_000_000_000 + n).padStart(14, "0");
+  let sum = 0;
+  for (let i = 0; i < 14; i++) {
+    let d = Number(body[13 - i]);
+    if (i % 2 === 0) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return body + String((10 - (sum % 10)) % 10);
+}
+
+/** A shop with a phone (IMEI tracked), an accessory, a supplier and a customer. */
+export async function stockedShop(label = "shop") {
+  const shop = await signUp(label);
+  const base = `/api/businesses/${shop.businessId}`;
+  const phone = await shop.c
+    .post(`${base}/catalog/products`)
+    .send({ name: "Galaxy A15", isSerialized: true, hsnCode: "8517", gstRateBps: 1800, variants: [{ name: "6/128 Black", salePrice: 1_599_900 }] })
+    .expect(201);
+  const cover = await shop.c
+    .post(`${base}/catalog/products`)
+    .send({ name: "Back cover", gstRateBps: 1800, variants: [{ name: "A15 clear", salePrice: 19_900 }] })
+    .expect(201);
+  const supplier = await shop.c.post(`${base}/parties`).send({ kind: "SUPPLIER", name: "Metro Distributors" }).expect(201);
+  const customer = await shop.c.post(`${base}/parties`).send({ kind: "CUSTOMER", name: "Ravi Kumar", phone: "9876543210" }).expect(201);
+  return {
+    ...shop,
+    base,
+    phoneId: phone.body.product.variants[0].id as string,
+    coverId: cover.body.product.variants[0].id as string,
+    supplierId: supplier.body.party.id as string,
+    customerId: customer.body.party.id as string,
+  };
+}
+
+export type Shop = Awaited<ReturnType<typeof stockedShop>>;
+
+/** Sum of every ledger entry must be zero, and the inventory account must equal the stock balances. */
+export async function assertBooksBalance(businessId: string) {
+  const all = await prisma.ledgerEntry.aggregate({ where: { businessId }, _sum: { debit: true, credit: true } });
+  const inventory = await prisma.ledgerEntry.aggregate({ where: { businessId, account: "INVENTORY" }, _sum: { debit: true, credit: true } });
+  const stock = await prisma.stockBalance.aggregate({ where: { businessId }, _sum: { value: true } });
+  const transit = await prisma.ledgerEntry.aggregate({ where: { businessId, account: "STOCK_IN_TRANSIT" }, _sum: { debit: true, credit: true } });
+  const inTransitValue = await prisma.documentLine.aggregate({
+    where: { businessId, document: { type: "TRANSFER", status: "IN_TRANSIT" } },
+    _sum: { costTotal: true },
+  });
+  return {
+    debits: all._sum.debit ?? 0,
+    credits: all._sum.credit ?? 0,
+    inventoryLedger: (inventory._sum.debit ?? 0) - (inventory._sum.credit ?? 0),
+    stockValue: stock._sum.value ?? 0,
+    transitLedger: (transit._sum.debit ?? 0) - (transit._sum.credit ?? 0),
+    inTransitValue: inTransitValue._sum.costTotal ?? 0,
+  };
+}
