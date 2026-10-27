@@ -92,8 +92,44 @@ Documents are what people write; posting derives two append-only ledgers from th
 - **Costs are private**: roles without `cost.view` (cashiers) never receive cost or stock
   value fields from the API.
 
-Not in this phase yet: sale and purchase returns, backdated cost replay, month locking,
-reports and day close (Phase 3).
+Not built yet: sale and purchase returns, backdated cost replay, month locking.
+
+## Reports
+
+Reports read only from posted documents and the two ledgers (`apps/api/src/routes/reports.ts`).
+Cancelled documents are left out. Every report takes `?from=&to=&branchId=` and only ever
+covers branches the member may see.
+
+| Report | What it shows | Who sees it |
+|---|---|---|
+| Sales | Bills, net sales before GST, GST, paid at counter vs credit; by day, branch, brand, category, product | `report.view` |
+| Profit | Verified, estimated and unknown-cost sales **side by side, never added together**; expenses, stock loss, cash shortage; sales with a missing cost | `report.view` + `cost.view` |
+| Collections | Money in (counter and dues) and out (suppliers, expenses) by payment method and day | `report.view` |
+| Stock | On-hand units, value at cost by confidence, value at sale price, low stock, in transit, phone age | `stock.view`; values only with `cost.view` |
+| Dues | Customer and supplier balances from the ledger, with aging of unpaid bills | `report.view` |
+| GST | Per GST branch: output tax by rate, input credit, net, B2B/B2C, B2B invoice list, HSN summary, invoice series | `report.view` |
+| Branches | Sales, collections, expenses, profit and stock per branch | `report.view` |
+| My day | A cashier's own bills today, by payment method | `sale.create` |
+
+Every table in the web app downloads as CSV (UTF-8 with BOM, so Excel opens it) for the
+accountant. Reports are GET requests, so they keep working while a trial is read-only.
+
+## Day close
+
+Each branch's `CASH` ledger account is its drawer: cash sales, receipts, cash expenses and
+payments all move it. At day close someone counts the drawer (`POST /day-closes`):
+
+- **Expected cash** = the drawer at the start of the day + cash in − cash out, from the ledger.
+- The **difference** is posted to `CASH_OVER_SHORT` (a shortage is a cost in the profit report).
+- Cash **taken out** after counting goes to `BANK` or `OWNER_DRAWINGS`, so the drawer carries
+  over correctly to the next day.
+- On a branch's first close an **opening float** (cash already in the drawer) is booked against
+  opening equity.
+- People without `report.view` (cashiers) **count blind**: the preview hides expected cash.
+- **A closed day is locked.** Nothing more posts at that branch on or before that date
+  (`409 DAY_CLOSED`), including cancellations. Owners, admins and branch managers can reopen
+  the latest close, which cancels its document. Closes and postings take a per-branch advisory
+  lock, so a sale can never slip in while a day is being closed.
 
 ## Money
 

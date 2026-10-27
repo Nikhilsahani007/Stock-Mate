@@ -292,17 +292,27 @@ const AGE_BUCKETS = [
 reportsRouter.get("/stock", requirePermission("stock.view"), async (req, res) => {
   const s = await scopeOf(req);
   const showCost = canSeeCost(req);
+  // Phones carry their own cost and confidence, so they are valued device by device;
+  // accessories by their branch balance, whose confidence is the weakest cost layer in it.
   const byBranch = await prisma.$queryRaw<
     { branchId: string; name: string; units: bigint; items: bigint; value: bigint; verified: bigint; estimated: bigint; unknownUnits: bigint; retail: bigint }[]
   >`
-    SELECT sb."branchId", b."name", COALESCE(SUM(sb."quantity"), 0)::bigint AS units, COUNT(*) FILTER (WHERE sb."quantity" > 0)::bigint AS items,
-      COALESCE(SUM(sb."value"), 0)::bigint AS value,
-      COALESCE(SUM(sb."value") FILTER (WHERE sb."costConfidence" = 'VERIFIED'), 0)::bigint AS verified,
-      COALESCE(SUM(sb."value") FILTER (WHERE sb."costConfidence" = 'ESTIMATED'), 0)::bigint AS estimated,
-      COALESCE(SUM(sb."quantity") FILTER (WHERE sb."costConfidence" = 'UNKNOWN'), 0)::bigint AS "unknownUnits",
-      COALESCE(SUM(sb."quantity"::bigint * COALESCE(v."salePrice", 0)), 0)::bigint AS retail
-    FROM "StockBalance" sb JOIN "Branch" b ON b."id" = sb."branchId" JOIN "Variant" v ON v."id" = sb."variantId"
-    WHERE sb."businessId" = ${s.businessId} AND sb."quantity" > 0 ${inBranches(`sb."branchId"`, s)}
+    WITH layers AS (
+      SELECT sb."branchId", sb."variantId", sb."quantity" AS qty, sb."value" AS value, sb."costConfidence" AS confidence
+      FROM "StockBalance" sb JOIN "Variant" v ON v."id" = sb."variantId" JOIN "Product" p ON p."id" = v."productId"
+      WHERE sb."businessId" = ${s.businessId} AND sb."quantity" > 0 AND p."isSerialized" = false ${inBranches(`sb."branchId"`, s)}
+      UNION ALL
+      SELECT su."branchId", su."variantId", 1, su."unitCost", su."costConfidence"
+      FROM "SerialUnit" su
+      WHERE su."businessId" = ${s.businessId} AND su."status" = 'IN_STOCK' ${inBranches(`su."branchId"`, s)}
+    )
+    SELECT l."branchId", b."name", SUM(l.qty)::bigint AS units, COUNT(DISTINCT l."variantId")::bigint AS items,
+      SUM(l.value)::bigint AS value,
+      COALESCE(SUM(l.value) FILTER (WHERE l.confidence = 'VERIFIED'), 0)::bigint AS verified,
+      COALESCE(SUM(l.value) FILTER (WHERE l.confidence = 'ESTIMATED'), 0)::bigint AS estimated,
+      COALESCE(SUM(l.qty) FILTER (WHERE l.confidence = 'UNKNOWN'), 0)::bigint AS "unknownUnits",
+      SUM(l.qty::bigint * COALESCE(v."salePrice", 0))::bigint AS retail
+    FROM layers l JOIN "Branch" b ON b."id" = l."branchId" JOIN "Variant" v ON v."id" = l."variantId"
     GROUP BY 1, 2 ORDER BY 2`;
   const byCategory = await prisma.$queryRaw<{ name: string; units: bigint; value: bigint; retail: bigint }[]>`
     SELECT COALESCE(c."name", 'No category') AS name, SUM(sb."quantity")::bigint AS units, SUM(sb."value")::bigint AS value,

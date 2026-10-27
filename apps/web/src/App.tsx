@@ -5,6 +5,7 @@ import { AcceptInvite } from "./pages/AcceptInvite";
 import { Activity } from "./pages/Activity";
 import { Branches } from "./pages/Branches";
 import { Dashboard } from "./pages/Dashboard";
+import { DayClose } from "./pages/DayClose";
 import { DocumentView } from "./pages/DocumentView";
 import { Documents } from "./pages/Documents";
 import { Expenses } from "./pages/Expenses";
@@ -14,6 +15,7 @@ import { NewSale } from "./pages/NewSale";
 import { Parties, PartyView } from "./pages/Parties";
 import { Products } from "./pages/Products";
 import { Register } from "./pages/Register";
+import { Reports } from "./pages/Reports";
 import { Stock } from "./pages/Stock";
 import { StockEntry } from "./pages/StockEntry";
 import { Team } from "./pages/Team";
@@ -45,6 +47,8 @@ export function App() {
             <Route path="parties" element={<Parties />} />
             <Route path="parties/:partyId" element={<PartyView />} />
             <Route path="expenses" element={<Expenses />} />
+            <Route path="reports" element={<Reports />} />
+            <Route path="day-close" element={<DayClose />} />
             <Route path="branches" element={<Branches />} />
             <Route path="team" element={<Team />} />
             <Route path="activity" element={<Activity />} />

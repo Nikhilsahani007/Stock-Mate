@@ -114,9 +114,15 @@ describe("stock report", () => {
       .send({ branchId: shop.branchId, businessDate: YESTERDAY, lines: [{ variantId: shop.coverId, quantity: 4, unitCost: 5_000 }] })
       .expect(201);
     await shop.c.patch(`${shop.base}/catalog/variants/${shop.coverId}`).send({ reorderLevel: 5 }).expect(200);
+    // A phone with no cost that is then sold leaves only the verified phone behind
+    await shop.c
+      .post(`${shop.base}/opening-stock`)
+      .send({ branchId: shop.branchId, lines: [{ variantId: shop.phoneId, quantity: 1, serials: [{ imei: imei(2) }] }] })
+      .expect(201);
+    await sell(shop, [{ variantId: shop.phoneId, quantity: 1, unitPrice: 1_200_000, serials: [imei(2)] }], { tenders: [{ method: "CASH", amount: 1_200_000 }] }).expect(201);
 
     const res = await shop.c.get(`${shop.base}/reports/stock`).expect(200);
-    expect(res.body.byBranch[0]).toMatchObject({ units: 5, items: 2, value: 1_020_000, verifiedValue: 1_000_000, estimatedValue: 20_000, retailValue: 1_599_900 + 4 * 19_900 });
+    expect(res.body.byBranch[0]).toMatchObject({ units: 5, items: 2, value: 1_020_000, verifiedValue: 1_000_000, estimatedValue: 20_000, unknownCostUnits: 0, retailValue: 1_599_900 + 4 * 19_900 });
     expect(res.body.lowStock).toEqual([expect.objectContaining({ quantity: 4, reorderLevel: 5 })]);
     expect(res.body.deviceAging[0]).toEqual({ label: "0–30 days", devices: 1, value: 1_000_000 });
 
